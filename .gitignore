@@ -1,0 +1,19 @@
+# 빌드 산출물 (exe는 Releases에 올림)
+dist/
+build/
+build_tmp/
+*.spec
+__pycache__/
+*.pyc
+
+# 런타임 생성 파일
+pcopt_stats.json
+pcopt_config.json
+pcopt_disabled_startup.json
+_disabled_startup/
+
+# 배포 임시
+PC최적화_친구공유/
+*.zip
+_build_entry.py
+_*.txt
