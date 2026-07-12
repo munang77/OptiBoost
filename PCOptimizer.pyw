@@ -24,8 +24,10 @@ import shutil
 import winreg
 import ctypes
 import hashlib
+import tempfile
 import threading
 import subprocess
+import urllib.request
 from ctypes import wintypes
 
 import tkinter as tk
@@ -1411,6 +1413,76 @@ def autorun_set(enable):
 
 
 # ---------------------------------------------------------------------------
+# 자동 업데이트 (GitHub Releases)
+# ---------------------------------------------------------------------------
+APP_VERSION = "1.1"
+GITHUB_REPO = "munang77/OptiBoost"
+
+
+def _parse_ver(s):
+    s = str(s).lstrip("vV").strip()
+    out = []
+    for p in s.split("."):
+        digits = re.sub(r"[^0-9]", "", p)
+        out.append(int(digits) if digits else 0)
+    return tuple(out) if out else (0,)
+
+
+def check_update(timeout=8):
+    """최신 릴리스 확인. 더 새 버전이면 dict, 아니면 None. 실패 시 예외."""
+    url = "https://api.github.com/repos/{}/releases/latest".format(GITHUB_REPO)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "OptiBoost-Updater",
+        "Accept": "application/vnd.github+json",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    tag = data.get("tag_name", "")
+    if _parse_ver(tag) <= _parse_ver(APP_VERSION):
+        return None
+    exe_url = None
+    for a in data.get("assets", []):
+        if a.get("name", "").lower() == "optiboost.exe":
+            exe_url = a.get("browser_download_url")
+            break
+    return {"tag": tag, "url": exe_url, "notes": data.get("body", "")}
+
+
+def apply_update(url):
+    """새 exe를 내려받아 교체 예약(배치)하고 True. exe 모드에서만 동작."""
+    if not FROZEN or not url:
+        return False
+    cur = sys.executable
+    newp = cur + ".new"
+    req = urllib.request.Request(url, headers={"User-Agent": "OptiBoost-Updater"})
+    with urllib.request.urlopen(req, timeout=120) as r, open(newp, "wb") as f:
+        shutil.copyfileobj(r, f)
+    if os.path.getsize(newp) < 1000000:  # 1MB 미만이면 손상된 다운로드
+        os.remove(newp)
+        return False
+    # 앱이 종료되어 exe 잠금이 풀릴 때까지 재시도하며 교체 후 재실행
+    bat = os.path.join(tempfile.gettempdir(), "optiboost_update.bat")
+    script = (
+        "@echo off\r\n"
+        "set /a n=0\r\n"
+        ":loop\r\n"
+        'move /y "{new}" "{cur}" >nul 2>&1\r\n'
+        "if not errorlevel 1 goto done\r\n"
+        "set /a n+=1\r\n"
+        "if %n% geq 40 goto done\r\n"
+        "ping 127.0.0.1 -n 2 >nul\r\n"
+        "goto loop\r\n"
+        ":done\r\n"
+        'start "" "{cur}"\r\n'
+        'del "%~f0"\r\n'
+    ).format(new=newp, cur=cur)
+    with open(bat, "w", encoding="mbcs") as f:
+        f.write(script)
+    subprocess.Popen(["cmd", "/c", bat], creationflags=CREATE_NO_WINDOW)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # 시스템 트레이 아이콘 (순수 ctypes Win32 Shell_NotifyIcon)
 # ---------------------------------------------------------------------------
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -2089,6 +2161,9 @@ class App(tk.Tk):
         # ---- 백그라운드 / 자동 실행 ----
         self._build_bg_card(f)
 
+        # ---- 업데이트 ----
+        self._build_update_card(f)
+
         # 누적 통계
         self.stats_lbl = tk.Label(
             f, text="", bg=CARD, fg=SUB, font=("Malgun Gothic", 10)
@@ -2142,6 +2217,127 @@ class App(tk.Tk):
         cfg = load_config()
         cfg["close_to_tray"] = self.close_to_tray.get()
         save_config(cfg)
+
+    # ---------- 자동 업데이트 ----------
+    def _build_update_card(self, parent):
+        card = tk.Frame(parent, bg="#232336")
+        card.pack(fill="x", padx=18, pady=(4, 8))
+        top = tk.Frame(card, bg="#232336")
+        top.pack(fill="x", padx=14, pady=(12, 2))
+        tk.Label(
+            top, text="🔄 업데이트", bg="#232336", fg=FG,
+            font=("Malgun Gothic", 12, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            top, text="현재 버전 v" + APP_VERSION, bg="#232336", fg=SUB,
+            font=("Malgun Gothic", 9),
+        ).pack(side="left", padx=10)
+        self.update_btn = self.btn(top, "업데이트 확인", self.check_update_ui, "ghost")
+        self.update_btn.pack(side="right")
+
+        self.update_lbl = tk.Label(
+            card, text="", bg="#232336", fg=SUB, font=("Malgun Gothic", 9),
+        )
+        self.update_lbl.pack(anchor="w", padx=14, pady=(0, 4))
+
+        self.autoupdate_var = tk.BooleanVar(
+            value=load_config().get("auto_update_check", True))
+        ttk.Checkbutton(
+            card, text=" 시작할 때 새 버전 자동 확인",
+            variable=self.autoupdate_var, command=self._save_autoupdate,
+            style="TCheckbutton",
+        ).pack(anchor="w", padx=14, pady=(0, 12))
+
+        # 시작 시 자동 확인 (exe 모드 + 옵션 켜짐)
+        if FROZEN and self.autoupdate_var.get():
+            self.after(3000, lambda: self.check_update_ui(silent=True))
+
+    def _save_autoupdate(self):
+        cfg = load_config()
+        cfg["auto_update_check"] = self.autoupdate_var.get()
+        save_config(cfg)
+
+    def check_update_ui(self, silent=False):
+        self.update_lbl.configure(text="업데이트 확인 중...", fg=SUB)
+        if not silent:
+            self.set_status("업데이트 확인 중...")
+
+        def work():
+            try:
+                info = check_update()
+                err = None
+            except Exception as e:
+                info, err = None, e
+            self.ui(self._update_result, info, err, silent)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _update_result(self, info, err, silent):
+        if err is not None:
+            self.update_lbl.configure(text="확인 실패 (인터넷 연결 확인)", fg=WARN)
+            if not silent:
+                self.set_status("업데이트 확인 실패")
+            return
+        if info is None:
+            self.update_lbl.configure(
+                text="최신 버전을 사용 중입니다. ✓", fg=ACCENT2)
+            if not silent:
+                self.set_status("최신 버전")
+            return
+        # 새 버전 있음 → 라벨/버튼 강조
+        tag = info.get("tag", "")
+        self._pending_update = info
+        self.update_lbl.configure(text="🔴 새 버전 {} 있음!".format(tag), fg=DANGER)
+        try:
+            self.update_btn.configure(
+                text="🔴 " + tag + " 설치", command=lambda: self._prompt_update(info))
+        except Exception:
+            pass
+        if silent:
+            # 자동 확인: 알림만, 대화상자는 안 띄움
+            if self.tray:
+                self.tray.notify(
+                    "OptiBoost 업데이트",
+                    "새 버전 {} 이 나왔어요. 대시보드에서 설치하세요.".format(tag))
+            self.set_status("새 버전 {} 있음 — 대시보드에서 설치".format(tag))
+            return
+        self._prompt_update(info)
+
+    def _prompt_update(self, info):
+        tag = info.get("tag", "")
+        if not FROZEN:
+            messagebox.showinfo(
+                "업데이트",
+                "새 버전 {} 이 있습니다.\n개발(파이썬) 모드에서는 자동 설치가 안 되니 "
+                "GitHub에서 받아주세요.".format(tag))
+            return
+        if not messagebox.askyesno(
+            "업데이트",
+            "새 버전 {} 이 있습니다. 지금 업데이트할까요?\n"
+            "(다운로드 후 자동으로 재시작됩니다)".format(tag)):
+            return
+        self._do_update(info)
+
+    def _do_update(self, info):
+        self.set_status("업데이트 다운로드 중...")
+        self.update_lbl.configure(text="다운로드 중... 잠시만요", fg=WARN)
+
+        def work():
+            try:
+                ok = apply_update(info.get("url"))
+            except Exception:
+                ok = False
+            if ok:
+                self.ui(lambda: messagebox.showinfo(
+                    "업데이트", "다운로드 완료! 프로그램을 재시작합니다."))
+                self.ui(self.quit_app)
+            else:
+                self.ui(lambda: messagebox.showwarning(
+                    "업데이트", "업데이트에 실패했습니다.\n"
+                    "GitHub 릴리스에서 직접 받아주세요."))
+                self.ui(self.set_status, "업데이트 실패")
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _build_auto_card(self, parent):
         cfg = load_config()
