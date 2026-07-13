@@ -279,6 +279,17 @@ def clean_paths(paths):
     return freed
 
 
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def is_reparse_point(path):
+    """정션/심볼릭 링크 등 재분석 지점이면 True (디스크 스캔 순환 방지용)."""
+    try:
+        return bool(os.lstat(path).st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
 LOCALAPPDATA = os.environ.get("LOCALAPPDATA", "")
 APPDATA = os.environ.get("APPDATA", "")
 WINDIR = os.environ.get("WINDIR", r"C:\Windows")
@@ -1415,7 +1426,7 @@ def autorun_set(enable):
 # ---------------------------------------------------------------------------
 # 자동 업데이트 (GitHub Releases)
 # ---------------------------------------------------------------------------
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 GITHUB_REPO = "munang77/OptiBoost"
 
 
@@ -1816,9 +1827,9 @@ class App(tk.Tk):
         self.tray = None
         try:
             self.tray = Tray(
-                on_open=lambda: self.ui( self.show_from_tray),
-                on_optimize=lambda: self.ui( self.one_click),
-                on_quit=lambda: self.ui( self.quit_app),
+                on_open=lambda: self.ui(self.show_from_tray),
+                on_optimize=lambda: self.ui(self.one_click),
+                on_quit=lambda: self.ui(self.quit_app),
             )
             self.tray.add()
         except Exception:
@@ -2234,6 +2245,8 @@ class App(tk.Tk):
         ).pack(side="left", padx=10)
         self.update_btn = self.btn(top, "업데이트 확인", self.check_update_ui, "ghost")
         self.update_btn.pack(side="right")
+        self.btn(top, "🌐 GitHub", self.open_github, "ghost").pack(
+            side="right", padx=6)
 
         self.update_lbl = tk.Label(
             card, text="", bg="#232336", fg=SUB, font=("Malgun Gothic", 9),
@@ -2256,6 +2269,12 @@ class App(tk.Tk):
         cfg = load_config()
         cfg["auto_update_check"] = self.autoupdate_var.get()
         save_config(cfg)
+
+    def open_github(self):
+        try:
+            os.startfile("https://github.com/" + GITHUB_REPO)
+        except Exception:
+            self.set_status("브라우저를 열 수 없습니다")
 
     def check_update_ui(self, silent=False):
         self.update_lbl.configure(text="업데이트 확인 중...", fg=SUB)
@@ -2503,11 +2522,11 @@ class App(tk.Tk):
             if freed:
                 add_freed(freed)
             now = time.strftime("%H:%M:%S")
-            self.ui( self.refresh_stats)
-            self.ui( self.refresh_mem)
-            self.ui( lambda: self.auto_last.configure(
+            self.ui(self.refresh_stats)
+            self.ui(self.refresh_mem)
+            self.ui(lambda: self.auto_last.configure(
                 text="마지막 실행: {} · {} 확보".format(now, human(freed))))
-            self.ui( self.set_status,
+            self.ui(self.set_status,
                        "자동 최적화 완료 ({}) · {} 확보".format(now, human(freed)))
 
         threading.Thread(target=work, daemon=True).start()
@@ -2530,9 +2549,9 @@ class App(tk.Tk):
             except Exception:
                 score, issues = 0, ["측정 실패"]
             g, col = health_grade(score)
-            self.ui( lambda: self.health_lbl.configure(
+            self.ui(lambda: self.health_lbl.configure(
                 text="🩺 PC 건강 점수: {}점 ({}등급)".format(score, g), fg=col))
-            self.ui( lambda: self.health_issues.configure(
+            self.ui(lambda: self.health_issues.configure(
                 text=(" · ".join(issues) if issues else "아주 깨끗해요! 👍")))
 
         threading.Thread(target=work, daemon=True).start()
@@ -2579,11 +2598,11 @@ class App(tk.Tk):
                 flush_system_cache()
             flush_dns()
             add_freed(freed)
-            self.ui( self.oc_result.configure,
+            self.ui(self.oc_result.configure,
                        {"text": "완료! {} 확보{}".format(human(freed), extra)})
-            self.ui( self.refresh_stats)
-            self.ui( self.refresh_mem)
-            self.ui( self.set_status, "최적화 완료 · {} 확보".format(human(freed)))
+            self.ui(self.refresh_stats)
+            self.ui(self.refresh_mem)
+            self.ui(self.set_status, "최적화 완료 · {} 확보".format(human(freed)))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -2646,7 +2665,7 @@ class App(tk.Tk):
 
     def _refresh_startup_worker(self):
         rows = list_startup()
-        self.ui( self._fill_startup, rows)
+        self.ui(self._fill_startup, rows)
 
     def _fill_startup(self, rows):
         self.su_tv.delete(*self.su_tv.get_children())
@@ -2791,9 +2810,9 @@ class App(tk.Tk):
             size = cat_size(c)
             grand += size
             txt = human(size) if size else "0 B"
-            self.ui( self._set_cat_size, c["key"], txt)
-        self.ui( self.clean_total.configure, {"text": "회수 가능: " + human(grand)})
-        self.ui( self.set_status, "검사 완료")
+            self.ui(self._set_cat_size, c["key"], txt)
+        self.ui(self.clean_total.configure, {"text": "회수 가능: " + human(grand)})
+        self.ui(self.set_status, "검사 완료")
 
     def _set_cat_size(self, key, txt):
         self.clean_size_lbls[key].configure(text=txt, fg=FG)
@@ -2818,13 +2837,13 @@ class App(tk.Tk):
     def _clean_worker(self, chosen):
         freed = 0
         for c in chosen:
-            self.ui( self.set_status, "정리 중: " + c["label"])
+            self.ui(self.set_status, "정리 중: " + c["label"])
             freed += clean_cat(c)
-            self.ui( self._set_cat_size, c["key"], "완료")
+            self.ui(self._set_cat_size, c["key"], "완료")
         add_freed(freed)
-        self.ui( self.clean_total.configure, {"text": "정리됨: " + human(freed)})
-        self.ui( self.refresh_stats)
-        self.ui( self.set_status, "정리 완료 · {} 확보".format(human(freed)))
+        self.ui(self.clean_total.configure, {"text": "정리됨: " + human(freed)})
+        self.ui(self.refresh_stats)
+        self.ui(self.set_status, "정리 완료 · {} 확보".format(human(freed)))
         self.ui(lambda: messagebox.showinfo(
             "완료", "정리 완료!\n확보한 공간: " + human(freed)))
 
@@ -2873,6 +2892,9 @@ class App(tk.Tk):
             side="left", padx=8
         )
         self.btn(prow, "🌐 DNS 캐시 비우기", self.do_flush_dns, "ghost").pack(
+            side="left", padx=8
+        )
+        self.btn(prow, "🔄 탐색기 다시 시작", self.restart_explorer, "ghost").pack(
             side="left", padx=8
         )
 
@@ -2932,11 +2954,11 @@ class App(tk.Tk):
             time.sleep(0.6)
             after = mem_status().ullAvailPhys
             gained = after - before
-            self.ui( self.refresh_mem)
+            self.ui(self.refresh_mem)
             msg = "메모리 정리 완료" + deep
             if gained > 0:
                 msg += " · 약 {} 확보".format(human(gained))
-            self.ui( self.set_status, msg)
+            self.ui(self.set_status, msg)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -2945,6 +2967,28 @@ class App(tk.Tk):
             self.set_status("DNS 캐시를 비웠습니다")
         else:
             self.set_status("DNS 캐시 비우기 실패")
+
+    def restart_explorer(self):
+        if not messagebox.askyesno(
+            "탐색기 다시 시작",
+            "작업표시줄·바탕화면이 느리거나 먹통일 때 도움이 됩니다.\n"
+            "화면이 잠깐 깜빡이며 탐색기가 재시작됩니다. 계속할까요?"):
+            return
+        self.set_status("탐색기 다시 시작 중...")
+
+        def work():
+            run_hidden(["taskkill", "/F", "/IM", "explorer.exe"])
+            time.sleep(1.2)
+            # 대부분 자동 재시작됨 — 안 됐을 때만 직접 실행 (불필요한 창 방지)
+            r = run_hidden(["tasklist", "/FI", "IMAGENAME eq explorer.exe", "/NH"])
+            if "explorer.exe" not in (r.stdout or "").lower():
+                try:
+                    subprocess.Popen(["explorer.exe"], creationflags=CREATE_NO_WINDOW)
+                except Exception:
+                    pass
+            self.ui(self.set_status, "탐색기를 다시 시작했습니다")
+
+        threading.Thread(target=work, daemon=True).start()
 
     def refresh_power(self):
         self.power_lbl.configure(text="현재: " + get_active_power_scheme())
@@ -2966,7 +3010,7 @@ class App(tk.Tk):
 
     def _refresh_procs_worker(self):
         procs = list_processes()
-        self.ui( self._fill_procs, procs)
+        self.ui(self._fill_procs, procs)
 
     def _fill_procs(self, procs):
         self.proc_tv.delete(*self.proc_tv.get_children())
@@ -3069,7 +3113,7 @@ class App(tk.Tk):
 
     def _refresh_game_worker(self):
         apps = list_closable_apps()
-        self.ui( self._fill_game_apps, apps)
+        self.ui(self._fill_game_apps, apps)
 
     def _fill_game_apps(self, apps):
         for w in self.game_list.winfo_children():
@@ -3139,9 +3183,9 @@ class App(tk.Tk):
                     purge_standby_list()
             self.boost_active = True
             self.boost_start = time.time()
-            self.ui( self._boost_ui_on, closed)
-            self.ui( self.refresh_mem)
-            self.ui( self.refresh_power)
+            self.ui(self._boost_ui_on, closed)
+            self.ui(self.refresh_mem)
+            self.ui(self.refresh_power)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -3406,7 +3450,7 @@ class App(tk.Tk):
                     states.append((tw, bool(tw["check"]())))
                 except Exception:
                     states.append((tw, False))
-            self.ui( self._render_tweaks, states)
+            self.ui(self._render_tweaks, states)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -3467,9 +3511,9 @@ class App(tk.Tk):
                 ok = False
             msg = tw["label"] + (" 복원됨" if applied else " 적용됨") if ok \
                 else tw["label"] + " 실패"
-            self.ui( self.set_status, msg)
-            self.ui( self.refresh_tweaks)
-            self.ui( self.refresh_power)
+            self.ui(self.set_status, msg)
+            self.ui(self.refresh_tweaks)
+            self.ui(self.refresh_power)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -3493,9 +3537,9 @@ class App(tk.Tk):
                             done += 1
                 except Exception:
                     pass
-            self.ui( self.set_status, "트윅 {}개 적용 완료".format(done))
-            self.ui( self.refresh_tweaks)
-            self.ui( self.refresh_power)
+            self.ui(self.set_status, "트윅 {}개 적용 완료".format(done))
+            self.ui(self.refresh_tweaks)
+            self.ui(self.refresh_power)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -3517,9 +3561,9 @@ class App(tk.Tk):
                             done += 1
                 except Exception:
                     pass
-            self.ui( self.set_status, "트윅 {}개 복원 완료".format(done))
-            self.ui( self.refresh_tweaks)
-            self.ui( self.refresh_power)
+            self.ui(self.set_status, "트윅 {}개 복원 완료".format(done))
+            self.ui(self.refresh_tweaks)
+            self.ui(self.refresh_power)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -3621,16 +3665,16 @@ class App(tk.Tk):
                         raw = raw.replace(b"\x00", b"")
                     line = raw.decode("mbcs", "replace")
                     if line.strip():
-                        self.ui( self._repair_append, line)
+                        self.ui(self._repair_append, line)
                 self.repair_proc.wait()
                 rc = self.repair_proc.returncode
             except Exception as e:
                 rc = -1
-                self.ui( self._repair_append, "오류: {}\n".format(e))
+                self.ui(self._repair_append, "오류: {}\n".format(e))
             self.repair_proc = None
-            self.ui( self._repair_append,
+            self.ui(self._repair_append,
                        "===== {} 종료 (코드 {}) =====\n".format(label, rc))
-            self.ui( self.set_status, label + " 완료")
+            self.ui(self.set_status, label + " 완료")
             self.repair_busy = False
 
         threading.Thread(target=work, daemon=True).start()
@@ -3716,8 +3760,11 @@ class App(tk.Tk):
     def _scan_disk_worker(self, base):
         files = []
         dirsize = {}
-        for root, dirs, names in os.walk(base, topdown=False):
-            s = 0
+        basenc = os.path.normcase(os.path.abspath(base))
+        for root, dirs, names in os.walk(base, topdown=True):
+            # 정션/링크 폴더는 타고 들어가지 않음 (순환·중복 계산 방지)
+            dirs[:] = [d for d in dirs
+                       if not is_reparse_point(os.path.join(root, d))]
             for name in names:
                 fp = os.path.join(root, name)
                 try:
@@ -3725,15 +3772,22 @@ class App(tk.Tk):
                 except Exception:
                     continue
                 files.append((sz, fp))
-                s += sz
-            for d in dirs:
-                s += dirsize.get(os.path.join(root, d), 0)
-            dirsize[root] = s
+                # 상위 폴더들(base까지)에 누적
+                d = root
+                while True:
+                    dirsize[d] = dirsize.get(d, 0) + sz
+                    if os.path.normcase(os.path.abspath(d)) == basenc:
+                        break
+                    parent = os.path.dirname(d)
+                    if parent == d:
+                        break
+                    d = parent
         files.sort(reverse=True)
         folders = sorted(
-            ((sz, p) for p, sz in dirsize.items() if p != base), reverse=True
-        )
-        self.ui( self._store_disk, files[:300], folders[:300])
+            ((sz, p) for p, sz in dirsize.items()
+             if os.path.normcase(os.path.abspath(p)) != basenc),
+            reverse=True)
+        self.ui(self._store_disk, files[:300], folders[:300])
 
     def _store_disk(self, files, folders):
         self.disk_prog.stop()
@@ -3830,7 +3884,9 @@ class App(tk.Tk):
     def _scan_dup_worker(self, base):
         # 1) 같은 크기끼리 묶기
         by_size = {}
-        for root, dirs, names in os.walk(base):
+        for root, dirs, names in os.walk(base, topdown=True):
+            dirs[:] = [d for d in dirs
+                       if not is_reparse_point(os.path.join(root, d))]
             for name in names:
                 fp = os.path.join(root, name)
                 try:
@@ -3867,7 +3923,7 @@ class App(tk.Tk):
                         groups.append((sz, group))
                         wasted += sz * (len(group) - 1)
         groups.sort(key=lambda g: g[0] * len(g[1]), reverse=True)
-        self.ui( self._fill_dup, groups, wasted)
+        self.ui(self._fill_dup, groups, wasted)
 
     def _fill_dup(self, groups, wasted):
         self.dup_prog.stop()
