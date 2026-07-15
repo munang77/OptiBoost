@@ -1487,9 +1487,118 @@ def make_shortcut(kind):
 
 
 # ---------------------------------------------------------------------------
+# 복원 지점 / 시스템 정보 / 설치 프로그램
+# ---------------------------------------------------------------------------
+def create_restore_point(desc="OptiBoost 복원 지점"):
+    """시스템 복원 지점 생성. (ok, 메시지). 관리자 필요. 느릴 수 있음."""
+    reg_set(HKLM, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore",
+            "SystemRestorePointCreationFrequency", 0)  # 24시간 제한 해제
+    ps = (
+        "Enable-ComputerRestore -Drive 'C:\\' -ErrorAction SilentlyContinue;"
+        "Checkpoint-Computer -Description '{}' "
+        "-RestorePointType 'MODIFY_SETTINGS'"
+    ).format(str(desc).replace("'", "''"))
+    r = _ps(ps)
+    msg = (r.stderr or r.stdout or "").strip()
+    return r.returncode == 0, msg
+
+
+def get_system_info():
+    """내 PC 사양 딕셔너리 (PowerShell CIM)."""
+    ps = (
+        "$os=Get-CimInstance Win32_OperatingSystem;"
+        "$cpu=Get-CimInstance Win32_Processor|Select-Object -First 1;"
+        "$cs=Get-CimInstance Win32_ComputerSystem;"
+        "$bb=Get-CimInstance Win32_BaseBoard;"
+        "$gpu=(Get-CimInstance Win32_VideoController|"
+        "Where-Object {$_.Name}|Select-Object -Expand Name) -join ', ';"
+        "$dsk=(Get-CimInstance Win32_DiskDrive|ForEach-Object "
+        "{$_.Model.Trim()+' ('+[math]::Round($_.Size/1GB)+'GB)'}) -join '; ';"
+        "'HOST='+$cs.Name;"
+        "'OS='+$os.Caption+' (빌드 '+$os.BuildNumber+')';"
+        "'CPU='+$cpu.Name.Trim();"
+        "'CORES='+[string]$cpu.NumberOfCores+'코어 / '"
+        "+[string]$cpu.NumberOfLogicalProcessors+'스레드';"
+        "'GPU='+$gpu;"
+        "'RAM='+[string][math]::Round($cs.TotalPhysicalMemory/1GB,1)+' GB';"
+        "'BOARD='+$bb.Manufacturer+' '+$bb.Product;"
+        "'DISK='+$dsk"
+    )
+    r = _ps(ps)
+    d = {}
+    if r.returncode == 0 and r.stdout:
+        for line in r.stdout.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                d[k.strip()] = v.strip()
+    return d
+
+
+def list_installed_programs():
+    """설치된 프로그램 목록 (용량 큰 순). [{name,version,publisher,size,uninstall}]"""
+    keys = [
+        (HKLM, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (HKLM, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (HKCU, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ]
+    seen = set()
+    out = []
+    for hive, path in keys:
+        try:
+            k = winreg.OpenKey(hive, path)
+        except Exception:
+            continue
+        i = 0
+        while True:
+            try:
+                sub = winreg.EnumKey(k, i)
+                i += 1
+            except OSError:
+                break
+            try:
+                sk = winreg.OpenKey(k, sub)
+            except Exception:
+                continue
+
+            def val(name):
+                try:
+                    return winreg.QueryValueEx(sk, name)[0]
+                except Exception:
+                    return None
+
+            name = val("DisplayName")
+            us = val("UninstallString")
+            try:
+                if (not name or not us or val("SystemComponent") == 1
+                        or val("ParentKeyName") or val("ReleaseType")):
+                    continue
+                low = name.lower()
+                if low.startswith(("security update", "update for", "hotfix",
+                                   "kb")):
+                    continue
+                key = name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                size = val("EstimatedSize")
+                out.append({
+                    "name": name,
+                    "version": val("DisplayVersion") or "",
+                    "publisher": val("Publisher") or "",
+                    "size": int(size) * 1024 if isinstance(size, int) else 0,
+                    "uninstall": us,
+                })
+            finally:
+                winreg.CloseKey(sk)
+        winreg.CloseKey(k)
+    out.sort(key=lambda x: x["size"], reverse=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 자동 업데이트 (GitHub Releases)
 # ---------------------------------------------------------------------------
-APP_VERSION = "1.4"
+APP_VERSION = "1.5"
 GITHUB_REPO = "munang77/OptiBoost"
 
 
@@ -1944,6 +2053,7 @@ class App(tk.Tk):
         self.tab_repair = ttk.Frame(self.nb, style="Card.TFrame")
         self.tab_startup = ttk.Frame(self.nb, style="Card.TFrame")
         self.tab_disk = ttk.Frame(self.nb, style="Card.TFrame")
+        self.tab_uninstall = ttk.Frame(self.nb, style="Card.TFrame")
         self.tab_dup = ttk.Frame(self.nb, style="Card.TFrame")
         self.nb.add(self.tab_dash, text=" 📊 대시보드 ")
         self.nb.add(self.tab_clean, text=" 🧹 청소 ")
@@ -1954,6 +2064,7 @@ class App(tk.Tk):
         self.nb.add(self.tab_repair, text=" 🩺 복구 ")
         self.nb.add(self.tab_startup, text=" 🧩 시작앱 ")
         self.nb.add(self.tab_disk, text=" 💽 디스크 ")
+        self.nb.add(self.tab_uninstall, text=" 🗑 프로그램 ")
         self.nb.add(self.tab_dup, text=" 🔁 중복 ")
 
         self._build_dash_tab()
@@ -1965,6 +2076,7 @@ class App(tk.Tk):
         self._build_repair_tab()
         self._build_startup_tab()
         self._build_disk_tab()
+        self._build_uninstall_tab()
         self._build_dup_tab()
 
         bar = tk.Label(
@@ -2231,7 +2343,10 @@ class App(tk.Tk):
         )
         self.health_issues.pack(side="left", padx=4)
         self.btn(hc, "↻ 측정", self.measure_health, "ghost").pack(
-            side="right", padx=10, pady=5
+            side="right", padx=(4, 10), pady=5
+        )
+        self.btn(hc, "🖥 내 PC 정보", self.show_sysinfo, "ghost").pack(
+            side="right", pady=5
         )
         self.after(1200, self.measure_health)
 
@@ -2727,6 +2842,45 @@ class App(tk.Tk):
                 text=(" · ".join(issues) if issues else "아주 깨끗해요! 👍")))
 
         threading.Thread(target=work, daemon=True).start()
+
+    def show_sysinfo(self):
+        self.set_status("내 PC 정보 읽는 중...")
+        threading.Thread(
+            target=lambda: self.ui(self._show_sysinfo_dialog, get_system_info()),
+            daemon=True).start()
+
+    def _show_sysinfo_dialog(self, d):
+        self.set_status("내 PC 정보")
+        win = tk.Toplevel(self)
+        win.title("내 PC 정보")
+        win.geometry("560x420")
+        win.configure(bg=CARD)
+        try:
+            win.iconbitmap(resource_path("icon.ico"))
+        except Exception:
+            pass
+        tk.Label(win, text="🖥 내 PC 정보", bg=CARD, fg=FG,
+                 font=("Malgun Gothic", 14, "bold")).pack(anchor="w", padx=18, pady=(16, 10))
+        body = tk.Frame(win, bg=CARD)
+        body.pack(fill="both", expand=True, padx=18, pady=(0, 16))
+        rows = [
+            ("컴퓨터 이름", d.get("HOST", "?")),
+            ("운영체제", d.get("OS", "?")),
+            ("CPU", d.get("CPU", "?")),
+            ("코어/스레드", d.get("CORES", "?")),
+            ("그래픽(GPU)", d.get("GPU", "?")),
+            ("메모리(RAM)", d.get("RAM", "?")),
+            ("메인보드", d.get("BOARD", "?")),
+            ("저장장치", d.get("DISK", "?")),
+        ]
+        for i, (k, v) in enumerate(rows):
+            r = tk.Frame(body, bg=CARD)
+            r.pack(fill="x", pady=3)
+            tk.Label(r, text=k, bg=CARD, fg=SUB, width=12, anchor="w",
+                     font=("Malgun Gothic", 10, "bold")).pack(side="left")
+            tk.Label(r, text=v or "-", bg=CARD, fg=FG, anchor="w", justify="left",
+                     wraplength=400, font=("Malgun Gothic", 10)).pack(
+                side="left", fill="x", expand=True)
 
     def _tick(self):
         if not self._alive:
@@ -3604,15 +3758,44 @@ class App(tk.Tk):
         self.btn(top, "🔥 추천 모두 적용", self.apply_all_tweaks, "green").pack(
             side="right", padx=6
         )
+        info = tk.Frame(f, bg=CARD)
+        info.pack(fill="x", padx=18, pady=(0, 4))
         tk.Label(
-            f, text="모든 트윅은 백업 후 적용되며, 언제든 '되돌리기'로 원상복구됩니다. 🛡 = 관리자 필요",
+            info, text="모든 트윅은 백업 후 적용되며, 언제든 '되돌리기'로 원상복구됩니다. 🛡 = 관리자 필요",
             bg=CARD, fg=SUB, font=("Malgun Gothic", 9),
-        ).pack(anchor="w", padx=18, pady=(0, 4))
+        ).pack(side="left")
+        self.btn(info, "🛟 복원 지점 만들기", self.make_restore_point, "ghost").pack(
+            side="right")
 
         wrap = tk.Frame(f, bg="#232336")
         wrap.pack(fill="both", expand=True, padx=16, pady=(4, 14))
         self.tweaks_list = self._make_scrollable(wrap)
         self.refresh_tweaks()
+
+    def make_restore_point(self):
+        if not messagebox.askyesno(
+            "복원 지점 만들기",
+            "지금 상태로 Windows 시스템 복원 지점을 만듭니다.\n"
+            "나중에 문제가 생기면 이 시점으로 되돌릴 수 있어요. (1~2분 걸릴 수 있음)\n계속할까요?"):
+            return
+        self.set_status("복원 지점 만드는 중... (잠시 걸려요)")
+
+        def work():
+            ok, msg = create_restore_point()
+            if ok:
+                self.ui(self.set_status, "복원 지점을 만들었습니다")
+                self.ui(lambda: messagebox.showinfo(
+                    "복원 지점", "복원 지점을 만들었어요.\n"
+                    "문제 시 [시스템 복원]에서 이 시점으로 되돌릴 수 있습니다."))
+            else:
+                self.ui(self.set_status, "복원 지점 생성 실패")
+                self.ui(lambda: messagebox.showwarning(
+                    "복원 지점",
+                    "복원 지점을 만들지 못했습니다.\n"
+                    "시스템 보호가 꺼져 있거나 하루 이내 이미 만든 경우일 수 있어요.\n\n"
+                    + (msg[:300] if msg else "")))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def refresh_tweaks(self):
         def work():
@@ -3785,6 +3968,12 @@ class App(tk.Tk):
             btns, "🌐 네트워크 초기화",
             lambda: self.run_repair(
                 "Winsock 초기화", ["netsh", "winsock", "reset"]),
+            "ghost",
+        ).pack(side="left", padx=6)
+        self.btn(
+            btns, "💽 드라이브 최적화",
+            lambda: self.run_repair(
+                "드라이브 최적화", ["defrag", "C:", "/O"]),
             "ghost",
         ).pack(side="left", padx=6)
 
@@ -3974,6 +4163,86 @@ class App(tk.Tk):
             self.disk_tv.insert("", "end", values=(human(size), fp))
         kind = "파일" if self.disk_mode.get() == "files" else "폴더"
         self.set_status("분석 완료 · 큰 {} 상위 {}개".format(kind, len(data)))
+
+    # ========================================================================
+    # 탭: 🗑 프로그램 제거
+    # ========================================================================
+    def _build_uninstall_tab(self):
+        f = self.tab_uninstall
+        top = tk.Frame(f, bg=CARD)
+        top.pack(fill="x", padx=16, pady=(14, 2))
+        tk.Label(
+            top, text="🗑 프로그램 제거", bg=CARD, fg=FG,
+            font=("Malgun Gothic", 13, "bold"),
+        ).pack(side="left")
+        self.btn(top, "↻ 새로고침", self.refresh_programs, "ghost").pack(side="right")
+        self.btn(top, "🗑 선택 제거", self.uninstall_selected, "danger").pack(
+            side="right", padx=8)
+        tk.Label(
+            f, text="설치된 프로그램을 용량 큰 순으로 보여줍니다. 안 쓰는 큰 프로그램을 정리하세요.",
+            bg=CARD, fg=SUB, font=("Malgun Gothic", 9),
+        ).pack(anchor="w", padx=18)
+
+        tvf = tk.Frame(f, bg=CARD)
+        tvf.pack(fill="both", expand=True, padx=16, pady=8)
+        self.prog_tv = ttk.Treeview(
+            tvf, columns=("size", "ver", "pub"), show="tree headings",
+            selectmode="browse")
+        self.prog_tv.heading("#0", text="프로그램")
+        self.prog_tv.heading("size", text="크기")
+        self.prog_tv.heading("ver", text="버전")
+        self.prog_tv.heading("pub", text="게시자")
+        self.prog_tv.column("#0", width=340)
+        self.prog_tv.column("size", width=90, anchor="e")
+        self.prog_tv.column("ver", width=110, anchor="center")
+        self.prog_tv.column("pub", width=200)
+        sb = ttk.Scrollbar(tvf, orient="vertical", command=self.prog_tv.yview)
+        self.prog_tv.configure(yscrollcommand=sb.set)
+        self.prog_tv.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.prog_map = {}
+        self.refresh_programs()
+
+    def refresh_programs(self):
+        self.set_status("설치된 프로그램 읽는 중...")
+        threading.Thread(target=self._refresh_programs_worker, daemon=True).start()
+
+    def _refresh_programs_worker(self):
+        progs = list_installed_programs()
+        self.ui(self._fill_programs, progs)
+
+    def _fill_programs(self, progs):
+        self.prog_tv.delete(*self.prog_tv.get_children())
+        self.prog_map = {}
+        total = 0
+        for p in progs:
+            total += p["size"]
+            sz = human(p["size"]) if p["size"] else "-"
+            iid = self.prog_tv.insert(
+                "", "end", text="  " + p["name"],
+                values=(sz, p["version"], p["publisher"]))
+            self.prog_map[iid] = p
+        self.set_status("설치된 프로그램 {}개 · 합계 약 {}".format(
+            len(progs), human(total)))
+
+    def uninstall_selected(self):
+        sel = self.prog_tv.selection()
+        if not sel:
+            messagebox.showinfo("안내", "제거할 프로그램을 선택하세요.")
+            return
+        p = self.prog_map.get(sel[0])
+        if not p:
+            return
+        if not messagebox.askyesno(
+            "프로그램 제거",
+            "'{}' 을(를) 제거합니다.\n해당 프로그램의 제거 마법사가 실행됩니다. 계속할까요?"
+            .format(p["name"])):
+            return
+        try:
+            subprocess.Popen(p["uninstall"], shell=True)
+            self.set_status("'{}' 제거 마법사를 실행했습니다".format(p["name"]))
+        except Exception as e:
+            messagebox.showwarning("실패", "제거를 시작하지 못했습니다:\n" + str(e))
 
     # ========================================================================
     # 탭 4: 중복 파일
