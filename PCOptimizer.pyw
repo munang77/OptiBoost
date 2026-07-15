@@ -1179,6 +1179,31 @@ def resource_path(name):
     return p if os.path.exists(p) else os.path.join(APP_DIR, name)
 
 
+LOG_FILE = os.path.join(APP_DIR, "optiboost.log")
+
+
+def log(msg):
+    """진단용 로그를 파일에 남긴다 (실패해도 조용히 넘어감)."""
+    try:
+        line = "[{}] {}\n".format(time.strftime("%Y-%m-%d %H:%M:%S"), msg)
+        # 로그가 너무 커지면(>512KB) 새로 시작
+        try:
+            if os.path.getsize(LOG_FILE) > 512 * 1024:
+                open(LOG_FILE, "w", encoding="utf-8").close()
+        except OSError:
+            pass
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
+def log_exc(prefix=""):
+    """현재 예외의 트레이스백을 로그에 남긴다."""
+    import traceback
+    log(prefix + "\n" + traceback.format_exc())
+
+
 def hms(sec):
     sec = max(0, int(sec))
     return "{:02d}:{:02d}:{:02d}".format(sec // 3600, (sec % 3600) // 60, sec % 60)
@@ -1402,31 +1427,40 @@ def silent_clean():
 
 
 # ---------------------------------------------------------------------------
-# Windows 시작 시 자동 실행 (HKCU Run)
+# Windows 시작 시 자동 실행
+#   관리자 권한 앱이라 HKCU Run 키로는 로그온 자동시작이 막힘 →
+#   "최고 권한" 예약 작업(ONLOGON /RL HIGHEST)으로 UAC 없이 승격 실행.
 # ---------------------------------------------------------------------------
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_NAME = "PCOptimizer"
+AUTOSTART_TASK = "OptiBoost_Autostart"
 
 
 def autorun_check():
-    return reg_get(HKCU, RUN_KEY, RUN_NAME) is not None
+    return run_hidden(["schtasks", "/query", "/tn", AUTOSTART_TASK]).returncode == 0
 
 
 def autorun_set(enable):
+    reg_del(HKCU, RUN_KEY, RUN_NAME)  # 레거시 Run 키 정리
     if enable:
         exe, pre = _app_launch()
-        cmd = '"{}"'.format(exe)
+        tr = '"{}"'.format(exe)
         for p in pre:
-            cmd += ' "{}"'.format(p)
-        cmd += " --minimized"
-        return reg_set(HKCU, RUN_KEY, RUN_NAME, cmd, winreg.REG_SZ)
-    return reg_del(HKCU, RUN_KEY, RUN_NAME)
+            tr += ' "{}"'.format(p)
+        tr += " --minimized"
+        r = run_hidden([
+            "schtasks", "/create", "/tn", AUTOSTART_TASK, "/tr", tr,
+            "/sc", "onlogon", "/rl", "highest", "/f",
+        ])
+        return r.returncode == 0
+    run_hidden(["schtasks", "/delete", "/tn", AUTOSTART_TASK, "/f"])
+    return True
 
 
 # ---------------------------------------------------------------------------
 # 자동 업데이트 (GitHub Releases)
 # ---------------------------------------------------------------------------
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 GITHUB_REPO = "munang77/OptiBoost"
 
 
@@ -1457,6 +1491,26 @@ def check_update(timeout=8):
             exe_url = a.get("browser_download_url")
             break
     return {"tag": tag, "url": exe_url, "notes": data.get("body", "")}
+
+
+def fetch_changelog(timeout=8, limit=15):
+    """GitHub 릴리스 목록(버전별 변경사항)."""
+    url = "https://api.github.com/repos/{}/releases".format(GITHUB_REPO)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "OptiBoost-Updater",
+        "Accept": "application/vnd.github+json",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    out = []
+    for rel in data[:limit]:
+        out.append({
+            "tag": rel.get("tag_name", ""),
+            "name": rel.get("name", ""),
+            "date": (rel.get("published_at", "") or "")[:10],
+            "body": (rel.get("body", "") or "").strip(),
+        })
+    return out
 
 
 def apply_update(url):
@@ -2005,16 +2059,10 @@ class App(tk.Tk):
             head, text="OptiBoost", bg=BG, fg=FG,
             font=("Malgun Gothic", 16, "bold"),
         ).pack(side="left")
-        role = "관리자" if is_admin() else "일반 권한"
-        col = ACCENT2 if is_admin() else SUB
         tk.Label(
-            head, text="● " + role, bg=BG, fg=col,
-            font=("Malgun Gothic", 9, "bold"),
-        ).pack(side="right", padx=(0, 4))
-        if not is_admin():
-            self.btn(
-                head, "관리자로 실행", relaunch_as_admin, kind="ghost"
-            ).pack(side="right", padx=6)
+            head, text="v" + APP_VERSION, bg=BG, fg=SUB,
+            font=("Malgun Gothic", 9),
+        ).pack(side="left", padx=(8, 0), pady=(8, 0))
 
     # ---------- 공용 버튼 ----------
     def btn(self, parent, text, cmd, kind="primary"):
@@ -2054,6 +2102,19 @@ class App(tk.Tk):
 
     def set_status(self, text):
         self.status.set(text)
+
+    def report_callback_exception(self, exc, val, tb):
+        """Tk 콜백에서 난 예외를 로그로 남긴다 (조용히 죽지 않게)."""
+        import traceback
+        log("UI 콜백 오류\n" + "".join(traceback.format_exception(exc, val, tb)))
+
+    def open_log(self):
+        try:
+            if not os.path.exists(LOG_FILE):
+                open(LOG_FILE, "w", encoding="utf-8").close()
+            os.startfile(LOG_FILE)
+        except Exception:
+            self.set_status("로그 파일을 열 수 없습니다")
 
     def ui(self, fn, *args, **kwargs):
         """워커 스레드에서 UI 갱신을 안전하게 요청 (큐에 넣기만 함)."""
@@ -2247,6 +2308,9 @@ class App(tk.Tk):
         self.update_btn.pack(side="right")
         self.btn(top, "🌐 GitHub", self.open_github, "ghost").pack(
             side="right", padx=6)
+        self.btn(top, "📋 변경사항", self.show_changelog, "ghost").pack(
+            side="right", padx=6)
+        self.btn(top, "📄 로그", self.open_log, "ghost").pack(side="right")
 
         self.update_lbl = tk.Label(
             card, text="", bg="#232336", fg=SUB, font=("Malgun Gothic", 9),
@@ -2275,6 +2339,55 @@ class App(tk.Tk):
             os.startfile("https://github.com/" + GITHUB_REPO)
         except Exception:
             self.set_status("브라우저를 열 수 없습니다")
+
+    def show_changelog(self):
+        self.set_status("변경사항 불러오는 중...")
+
+        def work():
+            try:
+                rels = fetch_changelog()
+            except Exception:
+                rels = None
+            self.ui(self._show_changelog_dialog, rels)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_changelog_dialog(self, rels):
+        if rels is None:
+            messagebox.showinfo("변경사항", "변경사항을 불러오지 못했습니다 (인터넷 확인).")
+            return
+        self.set_status("변경사항")
+        win = tk.Toplevel(self)
+        win.title("OptiBoost 변경사항")
+        win.geometry("560x520")
+        win.configure(bg=CARD)
+        try:
+            win.iconbitmap(resource_path("icon.ico"))
+        except Exception:
+            pass
+        tk.Label(win, text="📋 버전별 변경사항", bg=CARD, fg=FG,
+                 font=("Malgun Gothic", 13, "bold")).pack(anchor="w", padx=16, pady=(14, 6))
+        wrap = tk.Frame(win, bg=CARD)
+        wrap.pack(fill="both", expand=True, padx=16, pady=(0, 14))
+        txt = tk.Text(wrap, bg="#1a1a28", fg=FG, relief="flat", wrap="word",
+                      font=("Malgun Gothic", 10), padx=12, pady=10)
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=txt.yview)
+        txt.configure(yscrollcommand=sb.set)
+        txt.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        txt.tag_configure("ver", foreground=ACCENT2,
+                          font=("Malgun Gothic", 12, "bold"), spacing1=8, spacing3=4)
+        txt.tag_configure("date", foreground=SUB, font=("Malgun Gothic", 9))
+        cur = _parse_ver(APP_VERSION)
+        for rel in rels:
+            head = rel["tag"]
+            if _parse_ver(rel["tag"]) == cur:
+                head += "  (현재 버전)"
+            txt.insert("end", head + "\n", "ver")
+            if rel["date"]:
+                txt.insert("end", rel["date"] + "\n", "date")
+            txt.insert("end", (rel["body"] or "(내용 없음)") + "\n\n")
+        txt.configure(state="disabled")
 
     def check_update_ui(self, silent=False):
         self.update_lbl.configure(text="업데이트 확인 중...", fg=SUB)
@@ -3998,20 +4111,28 @@ def main():
     if "--silent-clean" in sys.argv:
         silent_clean()
         return
+    # 항상 관리자 권한으로 실행 (아니면 승격 후 재실행하고 현재 프로세스는 종료)
+    if not is_admin():
+        relaunch_as_admin()
+        return
     if not acquire_single_instance():
         # 이미 실행 중 → 기존 창을 띄우라고 신호했으니 조용히 종료
         return
+    log("앱 시작 (v{}, frozen={}, admin={})".format(
+        APP_VERSION, FROZEN, is_admin()))
     try:
         app = App()
         app.mainloop()
+        log("앱 정상 종료")
     except Exception as e:
         import traceback
-
         traceback.print_exc()
+        log_exc("치명적 오류")
         try:
             ctypes.windll.user32.MessageBoxW(
-                None, "오류가 발생했습니다:\n{}".format(e), "OptiBoost", 0x10
-            )
+                None,
+                "오류가 발생했습니다:\n{}\n\n로그: {}".format(e, LOG_FILE),
+                "OptiBoost", 0x10)
         except Exception:
             pass
 

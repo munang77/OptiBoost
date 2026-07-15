@@ -10,10 +10,14 @@ __pycache__/
 pcopt_stats.json
 pcopt_config.json
 pcopt_disabled_startup.json
+optiboost.log
 _disabled_startup/
 
 # 배포 임시
 PC최적화_친구공유/
+OptiBoost_배포/
 *.zip
 _build_entry.py
 _*.txt
+_*.py
+_*.ps1

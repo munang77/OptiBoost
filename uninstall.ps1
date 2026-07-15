@@ -5,8 +5,9 @@ $inst = Join-Path $env:LOCALAPPDATA 'Programs\OptiBoost'
 Get-Process OptiBoost -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 400
 
-# 예약 자동청소 제거
+# 예약 작업 제거 (자동청소 + 자동시작)
 schtasks /delete /tn PCOptimizer_WeeklyClean /f 2>$null | Out-Null
+schtasks /delete /tn OptiBoost_Autostart /f 2>$null | Out-Null
 
 # 바로가기 제거
 Remove-Item (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\OptiBoost.lnk') -Force
