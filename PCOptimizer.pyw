@@ -1486,6 +1486,22 @@ def make_shortcut(kind):
     return r.returncode == 0
 
 
+def relaunch_app():
+    """앱을 잠깐 뒤에 다시 시작 (기존 인스턴스가 종료돼 뮤텍스를 놓을 시간 확보)."""
+    exe, pre = _app_launch()
+    parts = " ".join('"{}"'.format(x) for x in ([exe] + pre))
+    bat = os.path.join(tempfile.gettempdir(), "optiboost_restart.bat")
+    script = (
+        "@echo off\r\n"
+        "ping 127.0.0.1 -n 2 >nul\r\n"
+        'start "" ' + parts + "\r\n"
+        'del "%~f0"\r\n'
+    )
+    with open(bat, "w", encoding="mbcs") as f:
+        f.write(script)
+    subprocess.Popen(["cmd", "/c", bat], creationflags=CREATE_NO_WINDOW)
+
+
 # ---------------------------------------------------------------------------
 # 복원 지점 / 시스템 정보 / 설치 프로그램
 # ---------------------------------------------------------------------------
@@ -1598,7 +1614,7 @@ def list_installed_programs():
 # ---------------------------------------------------------------------------
 # 자동 업데이트 (GitHub Releases)
 # ---------------------------------------------------------------------------
-APP_VERSION = "1.6"
+APP_VERSION = "1.7"
 GITHUB_REPO = "munang77/OptiBoost"
 
 
@@ -1947,19 +1963,34 @@ def acquire_single_instance():
 
 
 # ---------------------------------------------------------------------------
-# GUI
+# GUI 테마 (밝게 / 어둡게)
 # ---------------------------------------------------------------------------
-# 밝은 테마 (흰색/검정)
-BG = "#eceef1"       # 창/탭 배경 (연회색)
-CARD = "#eceef1"     # 탭 콘텐츠 배경 — 흰색 카드가 위에 올라감
-FG = "#1b1b1e"       # 기본 글자 (진한 검정)
-SUB = "#70707a"      # 보조 글자 (회색)
-ACCENT = "#141417"   # 강조/기본 버튼 (검정)
-ACCENT2 = "#12a150"  # 성공/좋음 (초록)
-DANGER = "#e23b3b"   # 위험 (빨강)
-WARN = "#cf8109"     # 경고 (주황)
-GHOST = "#dfe1e5"    # 보조 버튼 배경 (연회색)
-CARDW = "#ffffff"    # 흰색 카드
+THEMES = {
+    "light": dict(  # 흰색/검정 밝은 테마
+        BG="#eceef1", CARD="#eceef1", CARDW="#ffffff", FG="#1b1b1e",
+        SUB="#70707a", ACCENT="#141417", ACCENT2="#12a150", DANGER="#e23b3b",
+        WARN="#cf8109", GHOST="#dfe1e5", INK="#fbfbfd", RING="#d9d9df",
+        RINGOFF="#c4c4cc", HEAD="#e2e4e8", SCROLL="#cfcfd6"),
+    "dark": dict(   # 검정 어두운 테마
+        BG="#161618", CARD="#161618", CARDW="#242428", FG="#e8e8ea",
+        SUB="#96969e", ACCENT="#6d6df0", ACCENT2="#20b563", DANGER="#f0554f",
+        WARN="#e0951f", GHOST="#33333a", INK="#1b1b1f", RING="#3a3a42",
+        RINGOFF="#4a4a52", HEAD="#2a2a30", SCROLL="#3a3a42"),
+}
+
+# 테마 색 상수 (apply_theme가 채움)
+BG = CARD = CARDW = FG = SUB = ACCENT = ACCENT2 = DANGER = WARN = GHOST = ""
+INK = RING = RINGOFF = HEAD = SCROLL = ""
+
+
+def apply_theme(name):
+    """테마 색을 모듈 전역에 적용. (UI를 만들기 전에 호출해야 함)"""
+    t = THEMES.get(name, THEMES["light"])
+    globals().update(t)
+    return name if name in THEMES else "light"
+
+
+apply_theme(load_config().get("theme", "light"))  # 모듈 로드 시 적용
 
 
 class Gauge(tk.Canvas):
@@ -1978,7 +2009,7 @@ class Gauge(tk.Canvas):
         self.delete("all")
         self.create_arc(
             pad, pad, s - pad, s - pad, start=0, extent=359.99,
-            style="arc", outline="#d9d9df", width=w,
+            style="arc", outline=RING, width=w,
         )
         if pct > 0:
             self.create_arc(
@@ -2182,19 +2213,19 @@ class App(tk.Tk):
         )
         st.map("TCheckbutton", background=[("active", CARDW)])
         st.configure(
-            "Treeview", background="#ffffff", fieldbackground="#ffffff",
+            "Treeview", background=CARDW, fieldbackground=CARDW,
             foreground=FG, rowheight=26, borderwidth=0,
             font=("Malgun Gothic", 9),
         )
         st.configure(
-            "Treeview.Heading", background="#e2e4e8", foreground=FG,
+            "Treeview.Heading", background=HEAD, foreground=FG,
             font=("Malgun Gothic", 9, "bold"), relief="flat",
         )
         st.map("Treeview",
                background=[("selected", ACCENT)],
                foreground=[("selected", "#ffffff")])
         st.configure(
-            "Vertical.TScrollbar", background="#cfcfd6", troughcolor=BG,
+            "Vertical.TScrollbar", background=SCROLL, troughcolor=BG,
             borderwidth=0, arrowcolor=SUB,
         )
 
@@ -2292,7 +2323,7 @@ class App(tk.Tk):
                 return
             w = getattr(w, "master", None)
 
-    def _make_scrollable(self, parent, bg="#ffffff"):
+    def _make_scrollable(self, parent, bg=CARDW):
         """마우스휠 지원 스크롤 영역을 만들고 내부 프레임을 반환."""
         canvas = tk.Canvas(parent, bg=bg, highlightthickness=0)
         vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
@@ -2336,15 +2367,15 @@ class App(tk.Tk):
         self.disk_free_lbl.pack()
 
         # PC 건강 점수
-        hc = tk.Frame(f, bg="#ffffff")
+        hc = tk.Frame(f, bg=CARDW)
         hc.pack(fill="x", padx=18, pady=(8, 4))
         self.health_lbl = tk.Label(
-            hc, text="🩺 PC 건강 점수: 측정 중...", bg="#ffffff", fg=FG,
+            hc, text="🩺 PC 건강 점수: 측정 중...", bg=CARDW, fg=FG,
             font=("Malgun Gothic", 11, "bold"),
         )
         self.health_lbl.pack(side="left", padx=14, pady=9)
         self.health_issues = tk.Label(
-            hc, text="", bg="#ffffff", fg=SUB, font=("Malgun Gothic", 9)
+            hc, text="", bg=CARDW, fg=SUB, font=("Malgun Gothic", 9)
         )
         self.health_issues.pack(side="left", padx=4)
         self.btn(hc, "↻ 측정", self.measure_health, "ghost").pack(
@@ -2356,22 +2387,22 @@ class App(tk.Tk):
         self.after(1200, self.measure_health)
 
         # 슈퍼 최적화
-        oc = tk.Frame(f, bg="#ffffff")
+        oc = tk.Frame(f, bg=CARDW)
         oc.pack(fill="x", padx=18, pady=(6, 6))
         tk.Label(
-            oc, text="슈퍼 최적화", bg="#ffffff", fg=FG,
+            oc, text="슈퍼 최적화", bg=CARDW, fg=FG,
             font=("Malgun Gothic", 12, "bold"),
         ).pack(anchor="w", padx=14, pady=(10, 0))
         tk.Label(
             oc,
             text="임시·캐시 정리 + 휴지통 + 메모리 정리 + 대기메모리 퍼지(관리자) + DNS 정리를 한 번에.",
-            bg="#ffffff", fg=SUB, font=("Malgun Gothic", 9),
+            bg=CARDW, fg=SUB, font=("Malgun Gothic", 9),
         ).pack(anchor="w", padx=14, pady=(2, 6))
-        ocb = tk.Frame(oc, bg="#ffffff")
+        ocb = tk.Frame(oc, bg=CARDW)
         ocb.pack(fill="x", padx=14, pady=(0, 10))
         self.btn(ocb, "⚡ 슈퍼 최적화", self.one_click, "green").pack(side="left")
         self.oc_result = tk.Label(
-            ocb, text="", bg="#ffffff", fg=ACCENT2,
+            ocb, text="", bg=CARDW, fg=ACCENT2,
             font=("Malgun Gothic", 10, "bold"),
         )
         self.oc_result.pack(side="left", padx=14)
@@ -2393,19 +2424,19 @@ class App(tk.Tk):
         self.refresh_stats()
 
     def _build_bg_card(self, parent):
-        card = tk.Frame(parent, bg="#ffffff")
+        card = tk.Frame(parent, bg=CARDW)
         card.pack(fill="x", padx=18, pady=(4, 8))
         tk.Label(
-            card, text="🖥 백그라운드 실행", bg="#ffffff", fg=FG,
+            card, text="🖥 백그라운드 실행", bg=CARDW, fg=FG,
             font=("Malgun Gothic", 12, "bold"),
         ).pack(anchor="w", padx=14, pady=(12, 0))
         tk.Label(
             card,
             text="트레이(시계 옆)에 숨어서 계속 돌아갑니다. 자동 반복 최적화와 함께 쓰면 좋아요.",
-            bg="#ffffff", fg=SUB, font=("Malgun Gothic", 9),
+            bg=CARDW, fg=SUB, font=("Malgun Gothic", 9),
         ).pack(anchor="w", padx=14, pady=(2, 6))
 
-        opt = tk.Frame(card, bg="#ffffff")
+        opt = tk.Frame(card, bg=CARDW)
         opt.pack(fill="x", padx=14, pady=(0, 4))
         self.autorun_var = tk.BooleanVar(value=autorun_check())
         ttk.Checkbutton(
@@ -2419,19 +2450,47 @@ class App(tk.Tk):
             style="TCheckbutton",
         ).pack(anchor="w", pady=1)
 
-        brow = tk.Frame(card, bg="#ffffff")
+        brow = tk.Frame(card, bg=CARDW)
         brow.pack(fill="x", padx=14, pady=(4, 4))
         self.btn(brow, "🡇 트레이로 숨기기", self.hide_to_tray, "ghost").pack(side="left")
         state = "사용 가능" if self.tray else "사용 불가(트레이 초기화 실패)"
-        tk.Label(brow, text="트레이 " + state, bg="#ffffff", fg=SUB,
+        tk.Label(brow, text="트레이 " + state, bg=CARDW, fg=SUB,
                  font=("Malgun Gothic", 9)).pack(side="left", padx=10)
 
-        srow = tk.Frame(card, bg="#ffffff")
+        srow = tk.Frame(card, bg=CARDW)
         srow.pack(fill="x", padx=14, pady=(0, 12))
         self.btn(srow, "🖥 바탕화면 바로가기 만들기",
                  self.add_desktop_shortcut, "ghost").pack(side="left")
         self.btn(srow, "📌 시작 메뉴에 추가",
                  self.add_startmenu_shortcut, "ghost").pack(side="left", padx=8)
+
+        trow = tk.Frame(card, bg=CARDW)
+        trow.pack(fill="x", padx=14, pady=(0, 12))
+        cur = load_config().get("theme", "light")
+        tk.Label(trow, text="테마:", bg=CARDW, fg=SUB,
+                 font=("Malgun Gothic", 9)).pack(side="left")
+        self.btn(trow, "☀ 밝게" + ("  ✓" if cur == "light" else ""),
+                 lambda: self.switch_theme("light"),
+                 "green" if cur == "light" else "ghost").pack(side="left", padx=(6, 4))
+        self.btn(trow, "🌙 어둡게" + ("  ✓" if cur == "dark" else ""),
+                 lambda: self.switch_theme("dark"),
+                 "green" if cur == "dark" else "ghost").pack(side="left")
+
+    def switch_theme(self, name):
+        if load_config().get("theme", "light") == name:
+            self.set_status("이미 " + ("어두운" if name == "dark" else "밝은") + " 테마입니다")
+            return
+        cfg = load_config()
+        cfg["theme"] = name
+        save_config(cfg)
+        if messagebox.askyesno(
+            "테마 변경",
+            ("어두운(검정)" if name == "dark" else "밝은(흰색)")
+            + " 테마로 바꿉니다.\n적용하려면 프로그램을 다시 시작해야 해요. 지금 다시 시작할까요?"):
+            relaunch_app()
+            self.quit_app()
+        else:
+            self.set_status("다음 실행 때 테마가 적용됩니다")
 
     def add_desktop_shortcut(self):
         self.set_status("바탕화면 바로가기 만드는 중...")
@@ -2471,16 +2530,16 @@ class App(tk.Tk):
 
     # ---------- 자동 업데이트 ----------
     def _build_update_card(self, parent):
-        card = tk.Frame(parent, bg="#ffffff")
+        card = tk.Frame(parent, bg=CARDW)
         card.pack(fill="x", padx=18, pady=(4, 8))
-        top = tk.Frame(card, bg="#ffffff")
+        top = tk.Frame(card, bg=CARDW)
         top.pack(fill="x", padx=14, pady=(12, 2))
         tk.Label(
-            top, text="🔄 업데이트", bg="#ffffff", fg=FG,
+            top, text="🔄 업데이트", bg=CARDW, fg=FG,
             font=("Malgun Gothic", 12, "bold"),
         ).pack(side="left")
         tk.Label(
-            top, text="현재 버전 v" + APP_VERSION, bg="#ffffff", fg=SUB,
+            top, text="현재 버전 v" + APP_VERSION, bg=CARDW, fg=SUB,
             font=("Malgun Gothic", 9),
         ).pack(side="left", padx=10)
         self.update_btn = self.btn(top, "업데이트 확인", self.check_update_ui, "ghost")
@@ -2492,7 +2551,7 @@ class App(tk.Tk):
         self.btn(top, "📄 로그", self.open_log, "ghost").pack(side="right")
 
         self.update_lbl = tk.Label(
-            card, text="", bg="#ffffff", fg=SUB, font=("Malgun Gothic", 9),
+            card, text="", bg=CARDW, fg=SUB, font=("Malgun Gothic", 9),
         )
         self.update_lbl.pack(anchor="w", padx=14, pady=(0, 4))
 
@@ -2548,7 +2607,7 @@ class App(tk.Tk):
                  font=("Malgun Gothic", 13, "bold")).pack(anchor="w", padx=16, pady=(14, 6))
         wrap = tk.Frame(win, bg=CARD)
         wrap.pack(fill="both", expand=True, padx=16, pady=(0, 14))
-        txt = tk.Text(wrap, bg="#ffffff", fg=FG, relief="flat", wrap="word",
+        txt = tk.Text(wrap, bg=CARDW, fg=FG, relief="flat", wrap="word",
                       font=("Malgun Gothic", 10), padx=12, pady=10)
         sb = ttk.Scrollbar(wrap, orient="vertical", command=txt.yview)
         txt.configure(yscrollcommand=sb.set)
@@ -2657,44 +2716,44 @@ class App(tk.Tk):
         self.auto_interval = 0
         self.auto_remaining = 0
 
-        card = tk.Frame(parent, bg="#ffffff")
+        card = tk.Frame(parent, bg=CARDW)
         card.pack(fill="x", padx=18, pady=(4, 8))
         tk.Label(
-            card, text="⏱ 자동 반복 최적화", bg="#ffffff", fg=FG,
+            card, text="⏱ 자동 반복 최적화", bg=CARDW, fg=FG,
             font=("Malgun Gothic", 12, "bold"),
         ).pack(anchor="w", padx=14, pady=(12, 0))
         tk.Label(
             card, text="설정한 간격마다 자동으로 최적화합니다. (앱이 켜져 있는 동안 작동)",
-            bg="#ffffff", fg=SUB, font=("Malgun Gothic", 9),
+            bg=CARDW, fg=SUB, font=("Malgun Gothic", 9),
         ).pack(anchor="w", padx=14, pady=(2, 6))
 
-        row = tk.Frame(card, bg="#ffffff")
+        row = tk.Frame(card, bg=CARDW)
         row.pack(fill="x", padx=14, pady=(0, 4))
-        tk.Label(row, text="간격:", bg="#ffffff", fg=FG,
+        tk.Label(row, text="간격:", bg=CARDW, fg=FG,
                  font=("Malgun Gothic", 10)).pack(side="left")
 
         def spin(maxv, default):
             v = tk.StringVar(value=str(default))
             sp = tk.Spinbox(
                 row, from_=0, to=maxv, width=4, textvariable=v,
-                bg="#ffffff", fg=FG, insertbackground=FG, relief="flat",
+                bg=CARDW, fg=FG, insertbackground=FG, relief="flat",
                 justify="center", font=("Malgun Gothic", 11, "bold"),
                 buttonbackground=CARD, highlightthickness=1,
-                highlightbackground="#d9d9df",
+                highlightbackground=RING,
             )
             return v, sp
 
         self.auto_h, sph = spin(99, cfg.get("auto_h", 0))
         sph.pack(side="left", padx=(8, 2))
-        tk.Label(row, text="시간", bg="#ffffff", fg=SUB,
+        tk.Label(row, text="시간", bg=CARDW, fg=SUB,
                  font=("Malgun Gothic", 9)).pack(side="left")
         self.auto_m, spm = spin(59, cfg.get("auto_m", 30))
         spm.pack(side="left", padx=(8, 2))
-        tk.Label(row, text="분", bg="#ffffff", fg=SUB,
+        tk.Label(row, text="분", bg=CARDW, fg=SUB,
                  font=("Malgun Gothic", 9)).pack(side="left")
         self.auto_s, sps = spin(59, cfg.get("auto_s", 0))
         sps.pack(side="left", padx=(8, 2))
-        tk.Label(row, text="초", bg="#ffffff", fg=SUB,
+        tk.Label(row, text="초", bg=CARDW, fg=SUB,
                  font=("Malgun Gothic", 9)).pack(side="left")
 
         self.auto_start_btn = self.btn(row, "▶ 시작", self.start_auto, "green")
@@ -2702,9 +2761,9 @@ class App(tk.Tk):
         self.auto_stop_btn = self.btn(row, "■ 정지", self.stop_auto, "danger")
         self.auto_stop_btn.pack(side="right", padx=6)
 
-        opt = tk.Frame(card, bg="#ffffff")
+        opt = tk.Frame(card, bg=CARDW)
         opt.pack(fill="x", padx=14, pady=(2, 4))
-        tk.Label(opt, text="포함:", bg="#ffffff", fg=SUB,
+        tk.Label(opt, text="포함:", bg=CARDW, fg=SUB,
                  font=("Malgun Gothic", 9)).pack(side="left")
         self.auto_mem = tk.BooleanVar(value=cfg.get("auto_mem", True))
         self.auto_temp = tk.BooleanVar(value=cfg.get("auto_temp", True))
@@ -2716,12 +2775,12 @@ class App(tk.Tk):
                             style="TCheckbutton").pack(side="left", padx=8)
 
         self.auto_status = tk.Label(
-            card, text="자동 최적화 꺼짐", bg="#ffffff", fg=SUB,
+            card, text="자동 최적화 꺼짐", bg=CARDW, fg=SUB,
             font=("Malgun Gothic", 10, "bold"),
         )
         self.auto_status.pack(anchor="w", padx=14, pady=(4, 2))
         self.auto_last = tk.Label(
-            card, text="", bg="#ffffff", fg=SUB, font=("Malgun Gothic", 9)
+            card, text="", bg=CARDW, fg=SUB, font=("Malgun Gothic", 9)
         )
         self.auto_last.pack(anchor="w", padx=14, pady=(0, 12))
 
@@ -3068,7 +3127,7 @@ class App(tk.Tk):
         self.clean_vars = {}
         self.clean_size_lbls = {}
         for c in self.cats:
-            row = tk.Frame(body, bg="#ffffff")
+            row = tk.Frame(body, bg=CARDW)
             row.pack(fill="x", pady=3)
             var = tk.BooleanVar(value=c["default"])
             self.clean_vars[c["key"]] = var
@@ -3077,11 +3136,11 @@ class App(tk.Tk):
             cb.pack(side="left", padx=8, pady=6)
             if c["note"]:
                 tk.Label(
-                    row, text="· " + c["note"], bg="#ffffff", fg=WARN,
+                    row, text="· " + c["note"], bg=CARDW, fg=WARN,
                     font=("Malgun Gothic", 9),
                 ).pack(side="left")
             lbl = tk.Label(
-                row, text="—", bg="#ffffff", fg=SUB,
+                row, text="—", bg=CARDW, fg=SUB,
                 font=("Malgun Gothic", 10, "bold"),
             )
             lbl.pack(side="right", padx=12)
@@ -3093,10 +3152,10 @@ class App(tk.Tk):
         self.btn(btns, "🧹 선택 항목 정리", self.do_clean, "green").pack(side="right")
 
         # 자동 예약 청소
-        sched = tk.Frame(f, bg="#ffffff")
+        sched = tk.Frame(f, bg=CARDW)
         sched.pack(fill="x", padx=16, pady=(0, 14))
         self.sched_lbl = tk.Label(
-            sched, text="", bg="#ffffff", fg=SUB, font=("Malgun Gothic", 9)
+            sched, text="", bg=CARDW, fg=SUB, font=("Malgun Gothic", 9)
         )
         self.sched_lbl.pack(side="left", padx=12, pady=10)
         self.btn(sched, "🗓 매주 자동청소 끄기", self.disable_schedule, "ghost").pack(
@@ -3184,37 +3243,37 @@ class App(tk.Tk):
     def _build_boost_tab(self):
         f = self.tab_boost
         # 메모리 카드
-        memcard = tk.Frame(f, bg="#ffffff")
+        memcard = tk.Frame(f, bg=CARDW)
         memcard.pack(fill="x", padx=16, pady=(14, 8))
         tk.Label(
-            memcard, text="메모리 (RAM)", bg="#ffffff", fg=SUB,
+            memcard, text="메모리 (RAM)", bg=CARDW, fg=SUB,
             font=("Malgun Gothic", 10, "bold"),
         ).pack(anchor="w", padx=12, pady=(10, 2))
         self.mem_lbl = tk.Label(
-            memcard, text="—", bg="#ffffff", fg=FG,
+            memcard, text="—", bg=CARDW, fg=FG,
             font=("Malgun Gothic", 14, "bold"),
         )
         self.mem_lbl.pack(anchor="w", padx=12)
         self.mem_bar = ttk.Progressbar(memcard, maximum=100, length=100)
         self.mem_bar.pack(fill="x", padx=12, pady=(6, 4))
-        mrow = tk.Frame(memcard, bg="#ffffff")
+        mrow = tk.Frame(memcard, bg=CARDW)
         mrow.pack(fill="x", padx=12, pady=(4, 12))
         self.btn(mrow, "🧠 메모리 정리", self.do_trim, "green").pack(side="left")
         self.btn(mrow, "↻ 새로고침", self.refresh_mem, "ghost").pack(side="left", padx=8)
 
         # 전원 카드
-        pcard = tk.Frame(f, bg="#ffffff")
+        pcard = tk.Frame(f, bg=CARDW)
         pcard.pack(fill="x", padx=16, pady=8)
         tk.Label(
-            pcard, text="전원 관리 옵션", bg="#ffffff", fg=SUB,
+            pcard, text="전원 관리 옵션", bg=CARDW, fg=SUB,
             font=("Malgun Gothic", 10, "bold"),
         ).pack(anchor="w", padx=12, pady=(10, 2))
         self.power_lbl = tk.Label(
-            pcard, text="현재: —", bg="#ffffff", fg=FG,
+            pcard, text="현재: —", bg=CARDW, fg=FG,
             font=("Malgun Gothic", 11, "bold"),
         )
         self.power_lbl.pack(anchor="w", padx=12)
-        prow = tk.Frame(pcard, bg="#ffffff")
+        prow = tk.Frame(pcard, bg=CARDW)
         prow.pack(fill="x", padx=12, pady=(6, 12))
         self.btn(prow, "⚡ 고성능", lambda: self.set_power("scheme_min"), "green").pack(
             side="left"
@@ -3230,12 +3289,12 @@ class App(tk.Tk):
         )
 
         # 프로세스 카드
-        proc = tk.Frame(f, bg="#ffffff")
+        proc = tk.Frame(f, bg=CARDW)
         proc.pack(fill="both", expand=True, padx=16, pady=(8, 14))
-        prow2 = tk.Frame(proc, bg="#ffffff")
+        prow2 = tk.Frame(proc, bg=CARDW)
         prow2.pack(fill="x", padx=12, pady=(10, 4))
         tk.Label(
-            prow2, text="백그라운드 프로그램 (메모리 많이 쓰는 순)", bg="#ffffff",
+            prow2, text="백그라운드 프로그램 (메모리 많이 쓰는 순)", bg=CARDW,
             fg=SUB, font=("Malgun Gothic", 10, "bold"),
         ).pack(side="left")
         self.btn(prow2, "↻ 목록", self.refresh_procs, "ghost").pack(side="right")
@@ -3243,7 +3302,7 @@ class App(tk.Tk):
             side="right", padx=8
         )
 
-        tvf = tk.Frame(proc, bg="#ffffff")
+        tvf = tk.Frame(proc, bg=CARDW)
         tvf.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self.proc_tv = ttk.Treeview(
             tvf, columns=("mem",), show="tree headings", selectmode="extended"
@@ -3395,10 +3454,10 @@ class App(tk.Tk):
         ).pack(anchor="w", padx=18)
 
         # 상태 배너
-        banner = tk.Frame(f, bg="#ffffff")
+        banner = tk.Frame(f, bg=CARDW)
         banner.pack(fill="x", padx=18, pady=(8, 6))
         self.boost_status = tk.Label(
-            banner, text="● 부스트 꺼짐", bg="#ffffff", fg=SUB,
+            banner, text="● 부스트 꺼짐", bg=CARDW, fg=SUB,
             font=("Malgun Gothic", 12, "bold"),
         )
         self.boost_status.pack(side="left", padx=14, pady=12)
@@ -3430,9 +3489,9 @@ class App(tk.Tk):
         ).pack(side="left")
         self.btn(head, "↻ 새로고침", self.refresh_game_apps, "ghost").pack(side="right")
 
-        listwrap = tk.Frame(f, bg="#ffffff")
+        listwrap = tk.Frame(f, bg=CARDW)
         listwrap.pack(fill="both", expand=True, padx=18, pady=(6, 10))
-        self.game_list = self._make_scrollable(listwrap, bg="#ffffff")
+        self.game_list = self._make_scrollable(listwrap, bg=CARDW)
 
         self.refresh_game_apps()
 
@@ -3453,20 +3512,20 @@ class App(tk.Tk):
         if not apps:
             tk.Label(
                 self.game_list, text="  정리할 백그라운드 앱이 없습니다. (이미 깔끔해요!)",
-                bg="#ffffff", fg=SUB, font=("Malgun Gothic", 10),
+                bg=CARDW, fg=SUB, font=("Malgun Gothic", 10),
             ).pack(anchor="w", padx=8, pady=10)
             return
         for name, pids, mem, default in apps:
             low = name.lower()
             var = tk.BooleanVar(value=default)
             self.game_app_vars[low] = var
-            row = tk.Frame(self.game_list, bg="#ffffff")
+            row = tk.Frame(self.game_list, bg=CARDW)
             row.pack(fill="x", pady=1)
             ttk.Checkbutton(
                 row, text="  " + name, variable=var, style="TCheckbutton"
             ).pack(side="left", padx=8, pady=2)
             tk.Label(
-                row, text=human(mem), bg="#ffffff", fg=SUB,
+                row, text=human(mem), bg=CARDW, fg=SUB,
                 font=("Malgun Gothic", 9),
             ).pack(side="right", padx=14)
         self.set_status("정리 가능 앱 {}개".format(len(apps)))
@@ -3568,15 +3627,15 @@ class App(tk.Tk):
         ).pack(anchor="w", padx=18)
 
         # 상태 카드
-        stc = tk.Frame(f, bg="#ffffff")
+        stc = tk.Frame(f, bg=CARDW)
         stc.pack(fill="x", padx=16, pady=(8, 6))
         self.sec_rtp = tk.Label(
-            stc, text="실시간 보호: 확인 중...", bg="#ffffff", fg=FG,
+            stc, text="실시간 보호: 확인 중...", bg=CARDW, fg=FG,
             font=("Malgun Gothic", 11, "bold"),
         )
         self.sec_rtp.pack(anchor="w", padx=14, pady=(10, 0))
         self.sec_info = tk.Label(
-            stc, text="", bg="#ffffff", fg=SUB, font=("Malgun Gothic", 9),
+            stc, text="", bg=CARDW, fg=SUB, font=("Malgun Gothic", 9),
             justify="left",
         )
         self.sec_info.pack(anchor="w", padx=14, pady=(2, 10))
@@ -3603,7 +3662,7 @@ class App(tk.Tk):
         outwrap = tk.Frame(f, bg=CARD)
         outwrap.pack(fill="both", expand=True, padx=16, pady=(6, 14))
         self.sec_out = tk.Text(
-            outwrap, bg="#fbfbfd", fg="#1b1b1e", insertbackground=FG,
+            outwrap, bg=INK, fg=FG, insertbackground=FG,
             relief="flat", font=("Consolas", 9), state="disabled", wrap="word",
         )
         ssb = ttk.Scrollbar(outwrap, orient="vertical", command=self.sec_out.yview)
@@ -3772,7 +3831,7 @@ class App(tk.Tk):
         self.btn(info, "🛟 복원 지점 만들기", self.make_restore_point, "ghost").pack(
             side="right")
 
-        wrap = tk.Frame(f, bg="#ffffff")
+        wrap = tk.Frame(f, bg=CARDW)
         wrap.pack(fill="both", expand=True, padx=16, pady=(4, 14))
         self.tweaks_list = self._make_scrollable(wrap)
         self.refresh_tweaks()
@@ -3818,11 +3877,11 @@ class App(tk.Tk):
         for w in self.tweaks_list.winfo_children():
             w.destroy()
         for tw, applied in states:
-            row = tk.Frame(self.tweaks_list, bg="#ffffff")
+            row = tk.Frame(self.tweaks_list, bg=CARDW)
             row.pack(fill="x", pady=3, padx=6)
             # 오른쪽 위젯을 먼저 pack해야 왼쪽 expand 프레임에 밀리지 않음
             state_lbl = tk.Label(
-                row, text=("적용됨" if applied else "꺼짐"), bg="#ffffff",
+                row, text=("적용됨" if applied else "꺼짐"), bg=CARDW,
                 fg=(ACCENT2 if applied else SUB),
                 font=("Malgun Gothic", 9, "bold"), width=6,
             )
@@ -3835,20 +3894,20 @@ class App(tk.Tk):
                              lambda t=tw: self._tweak_do(t, False), "green")
             b.pack(side="right", padx=4, pady=4)
             dot = tk.Label(
-                row, text="●", bg="#ffffff",
-                fg=(ACCENT2 if applied else "#c4c4cc"),
+                row, text="●", bg=CARDW,
+                fg=(ACCENT2 if applied else RINGOFF),
                 font=("Malgun Gothic", 12),
             )
             dot.pack(side="left", padx=(10, 6), pady=6)
-            info = tk.Frame(row, bg="#ffffff")
+            info = tk.Frame(row, bg=CARDW)
             info.pack(side="left", fill="x", expand=True)
             name = tw["label"] + ("   🛡 관리자" if tw["admin"] else "")
             tk.Label(
-                info, text=name, bg="#ffffff", fg=FG, anchor="w",
+                info, text=name, bg=CARDW, fg=FG, anchor="w",
                 font=("Malgun Gothic", 10, "bold"),
             ).pack(anchor="w", fill="x")
             tk.Label(
-                info, text=tw["desc"], bg="#ffffff", fg=SUB, anchor="w",
+                info, text=tw["desc"], bg=CARDW, fg=SUB, anchor="w",
                 wraplength=600, justify="left", font=("Malgun Gothic", 9),
             ).pack(anchor="w", fill="x")
         self.set_status("트윅 {}개 · 적용됨 {}개".format(
@@ -3985,7 +4044,7 @@ class App(tk.Tk):
         outwrap = tk.Frame(f, bg=CARD)
         outwrap.pack(fill="both", expand=True, padx=16, pady=(4, 14))
         self.repair_out = tk.Text(
-            outwrap, bg="#fbfbfd", fg="#1b1b1e", insertbackground=FG,
+            outwrap, bg=INK, fg=FG, insertbackground=FG,
             relief="flat", font=("Consolas", 9), state="disabled", wrap="word",
         )
         rsb = ttk.Scrollbar(outwrap, orient="vertical",
@@ -4057,7 +4116,7 @@ class App(tk.Tk):
         ).pack(side="left")
         self.disk_path = tk.StringVar(value=os.environ.get("USERPROFILE", "C:\\"))
         tk.Entry(
-            top, textvariable=self.disk_path, bg="#ffffff", fg=FG,
+            top, textvariable=self.disk_path, bg=CARDW, fg=FG,
             insertbackground=FG, relief="flat", font=("Malgun Gothic", 10),
         ).pack(side="left", fill="x", expand=True, padx=8, ipady=4)
         self.btn(top, "폴더 선택", self.pick_disk_folder, "ghost").pack(side="left")
@@ -4069,7 +4128,7 @@ class App(tk.Tk):
         for txt, val in (("📄 큰 파일 보기", "files"), ("📁 큰 폴더 보기", "folders")):
             rb = tk.Radiobutton(
                 mode, text=txt, value=val, variable=self.disk_mode,
-                command=self._render_disk, bg=CARD, fg=FG, selectcolor="#ffffff",
+                command=self._render_disk, bg=CARD, fg=FG, selectcolor=CARDW,
                 activebackground=CARD, activeforeground=FG,
                 font=("Malgun Gothic", 9, "bold"), indicatoron=True,
                 bd=0, highlightthickness=0,
@@ -4263,7 +4322,7 @@ class App(tk.Tk):
             value=os.path.join(os.environ.get("USERPROFILE", "C:\\"), "Downloads")
         )
         tk.Entry(
-            top, textvariable=self.dup_path, bg="#ffffff", fg=FG,
+            top, textvariable=self.dup_path, bg=CARDW, fg=FG,
             insertbackground=FG, relief="flat", font=("Malgun Gothic", 10),
         ).pack(side="left", fill="x", expand=True, padx=8, ipady=4)
         self.btn(top, "폴더 선택", self.pick_dup_folder, "ghost").pack(side="left")
