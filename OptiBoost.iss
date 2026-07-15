@@ -3,7 +3,7 @@
 ; (dist\OptiBoost.exe 를 먼저 빌드해 두어야 함)
 
 #define AppName "OptiBoost"
-#define AppVersion "1.3"
+#define AppVersion "1.4"
 #define AppPublisher "munang77"
 #define AppURL "https://github.com/munang77/OptiBoost"
 #define AppExe "OptiBoost.exe"

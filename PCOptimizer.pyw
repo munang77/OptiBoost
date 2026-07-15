@@ -1457,10 +1457,39 @@ def autorun_set(enable):
     return True
 
 
+def make_shortcut(kind):
+    """바탕화면/시작메뉴에 OptiBoost 바로가기 생성. kind='desktop'|'startmenu'."""
+    exe, pre = _app_launch()
+    args = " ".join('"{}"'.format(p) for p in pre)
+    icon = os.path.join(APP_DIR, "icon.ico")  # 영구 경로 (exe 옆). 없으면 exe 자체
+    if not os.path.exists(icon):
+        icon = exe
+
+    def q(s):  # PowerShell 단일따옴표 리터럴 (내부 ' 은 '' 로)
+        return "'" + str(s).replace("'", "''") + "'"
+
+    folder = ("[Environment]::GetFolderPath('Programs')" if kind == "startmenu"
+              else "[Environment]::GetFolderPath('Desktop')")
+    ps = (
+        "$d=" + folder + ";"
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
+        "(Join-Path $d 'OptiBoost.lnk'));"
+        "$s.TargetPath=" + q(exe) + ";"
+        "$s.Arguments=" + q(args) + ";"
+        "$s.WorkingDirectory=" + q(APP_DIR) + ";"
+        "$s.IconLocation=" + q(icon) + ";"
+        "$s.Description='OptiBoost';"
+        "$s.Save()"
+    )
+    r = run_hidden([
+        "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps])
+    return r.returncode == 0
+
+
 # ---------------------------------------------------------------------------
 # 자동 업데이트 (GitHub Releases)
 # ---------------------------------------------------------------------------
-APP_VERSION = "1.3"
+APP_VERSION = "1.4"
 GITHUB_REPO = "munang77/OptiBoost"
 
 
@@ -2271,11 +2300,41 @@ class App(tk.Tk):
         ).pack(anchor="w", pady=1)
 
         brow = tk.Frame(card, bg="#232336")
-        brow.pack(fill="x", padx=14, pady=(4, 12))
+        brow.pack(fill="x", padx=14, pady=(4, 4))
         self.btn(brow, "🡇 트레이로 숨기기", self.hide_to_tray, "ghost").pack(side="left")
         state = "사용 가능" if self.tray else "사용 불가(트레이 초기화 실패)"
         tk.Label(brow, text="트레이 " + state, bg="#232336", fg=SUB,
                  font=("Malgun Gothic", 9)).pack(side="left", padx=10)
+
+        srow = tk.Frame(card, bg="#232336")
+        srow.pack(fill="x", padx=14, pady=(0, 12))
+        self.btn(srow, "🖥 바탕화면 바로가기 만들기",
+                 self.add_desktop_shortcut, "ghost").pack(side="left")
+        self.btn(srow, "📌 시작 메뉴에 추가",
+                 self.add_startmenu_shortcut, "ghost").pack(side="left", padx=8)
+
+    def add_desktop_shortcut(self):
+        self.set_status("바탕화면 바로가기 만드는 중...")
+        threading.Thread(
+            target=lambda: self.ui(self._shortcut_done,
+                                   make_shortcut("desktop"), "바탕화면"),
+            daemon=True).start()
+
+    def add_startmenu_shortcut(self):
+        self.set_status("시작 메뉴에 추가하는 중...")
+        threading.Thread(
+            target=lambda: self.ui(self._shortcut_done,
+                                   make_shortcut("startmenu"), "시작 메뉴"),
+            daemon=True).start()
+
+    def _shortcut_done(self, ok, where):
+        if ok:
+            self.set_status(where + "에 바로가기를 만들었습니다")
+            messagebox.showinfo(
+                "바로가기", "{}에 OptiBoost 바로가기를 만들었어요.".format(where))
+        else:
+            self.set_status("바로가기 생성 실패")
+            messagebox.showwarning("바로가기", "바로가기를 만들지 못했습니다.")
 
     def _toggle_autorun(self):
         want = self.autorun_var.get()
