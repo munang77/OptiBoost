@@ -1614,7 +1614,7 @@ def list_installed_programs():
 # ---------------------------------------------------------------------------
 # 자동 업데이트 (GitHub Releases)
 # ---------------------------------------------------------------------------
-APP_VERSION = "1.7"
+APP_VERSION = "1.8"
 GITHUB_REPO = "munang77/OptiBoost"
 
 
@@ -1640,11 +1640,14 @@ def check_update(timeout=8):
     if _parse_ver(tag) <= _parse_ver(APP_VERSION):
         return None
     exe_url = None
+    exe_size = 0
     for a in data.get("assets", []):
         if a.get("name", "").lower() == "optiboost.exe":
             exe_url = a.get("browser_download_url")
+            exe_size = a.get("size", 0)
             break
-    return {"tag": tag, "url": exe_url, "notes": data.get("body", "")}
+    return {"tag": tag, "url": exe_url, "size": exe_size,
+            "notes": data.get("body", "")}
 
 
 def fetch_changelog(timeout=8, limit=15):
@@ -1667,19 +1670,53 @@ def fetch_changelog(timeout=8, limit=15):
     return out
 
 
-def apply_update(url):
-    """새 exe를 내려받아 교체 예약(배치)하고 True. exe 모드에서만 동작."""
-    if not FROZEN or not url:
-        return False
+def apply_update(info):
+    """새 exe를 내려받아(무결성 검증) 교체 예약. (ok, 메시지). exe 모드 전용."""
+    if not FROZEN or not info or not info.get("url"):
+        return False, "업데이트 정보가 없습니다"
+    url = info["url"]
+    expected = int(info.get("size") or 0)
     cur = sys.executable
     newp = cur + ".new"
-    req = urllib.request.Request(url, headers={"User-Agent": "OptiBoost-Updater"})
-    with urllib.request.urlopen(req, timeout=120) as r, open(newp, "wb") as f:
-        shutil.copyfileobj(r, f)
-    if os.path.getsize(newp) < 1000000:  # 1MB 미만이면 손상된 다운로드
-        os.remove(newp)
-        return False
-    # 앱이 종료되어 exe 잠금이 풀릴 때까지 재시도하며 교체 후 재실행
+
+    # 여러 번 시도하며, 받은 크기가 기대 크기와 정확히 일치할 때만 성공 처리
+    ok = False
+    got = 0
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "OptiBoost-Updater"})
+            with urllib.request.urlopen(req, timeout=300) as r, \
+                    open(newp, "wb") as f:
+                shutil.copyfileobj(r, f, length=256 * 1024)
+            got = os.path.getsize(newp)
+            # 기대 크기를 알면 정확히 일치, 모르면 최소 8MB 이상 + MZ 헤더 확인
+            head_ok = False
+            try:
+                with open(newp, "rb") as fh:
+                    head_ok = fh.read(2) == b"MZ"
+            except Exception:
+                pass
+            if head_ok and got > 2_000_000 and (expected == 0 or got == expected):
+                ok = True
+                break
+            log("업데이트 다운로드 불완전: {} / 기대 {} (시도 {})".format(
+                got, expected, attempt + 1))
+        except Exception:
+            log_exc("업데이트 다운로드 오류 (시도 {})".format(attempt + 1))
+        time.sleep(2)
+
+    if not ok:
+        try:
+            os.remove(newp)
+        except Exception:
+            pass
+        return False, "다운로드가 완전하지 않습니다 (받은 {} / 기대 {} 바이트).\n" \
+                      "잠시 후 다시 시도하거나, GitHub에서 직접 받아주세요.".format(
+                          got, expected)
+
+    log("업데이트 다운로드 완료 {} 바이트".format(got))
+    # 앱 종료로 exe 잠금이 풀릴 때까지 이동 재시도 → 잠깐 대기(백신 안정화) → 재실행
     bat = os.path.join(tempfile.gettempdir(), "optiboost_update.bat")
     script = (
         "@echo off\r\n"
@@ -1688,17 +1725,18 @@ def apply_update(url):
         'move /y "{new}" "{cur}" >nul 2>&1\r\n'
         "if not errorlevel 1 goto done\r\n"
         "set /a n+=1\r\n"
-        "if %n% geq 40 goto done\r\n"
+        "if %n% geq 60 goto done\r\n"
         "ping 127.0.0.1 -n 2 >nul\r\n"
         "goto loop\r\n"
         ":done\r\n"
+        "ping 127.0.0.1 -n 4 >nul\r\n"
         'start "" "{cur}"\r\n'
         'del "%~f0"\r\n'
     ).format(new=newp, cur=cur)
     with open(bat, "w", encoding="mbcs") as f:
         f.write(script)
     subprocess.Popen(["cmd", "/c", bat], creationflags=CREATE_NO_WINDOW)
-    return True
+    return True, ""
 
 
 # ---------------------------------------------------------------------------
@@ -2694,17 +2732,16 @@ class App(tk.Tk):
 
         def work():
             try:
-                ok = apply_update(info.get("url"))
-            except Exception:
-                ok = False
+                ok, msg = apply_update(info)
+            except Exception as e:
+                ok, msg = False, str(e)
             if ok:
                 self.ui(lambda: messagebox.showinfo(
                     "업데이트", "다운로드 완료! 프로그램을 재시작합니다."))
                 self.ui(self.quit_app)
             else:
                 self.ui(lambda: messagebox.showwarning(
-                    "업데이트", "업데이트에 실패했습니다.\n"
-                    "GitHub 릴리스에서 직접 받아주세요."))
+                    "업데이트", "업데이트에 실패했습니다.\n\n" + (msg or "")))
                 self.ui(self.set_status, "업데이트 실패")
 
         threading.Thread(target=work, daemon=True).start()
