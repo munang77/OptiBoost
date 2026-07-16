@@ -1204,31 +1204,6 @@ def log_exc(prefix=""):
     log(prefix + "\n" + traceback.format_exc())
 
 
-def cleanup_stale_runtime():
-    """onefile 압축 잔재(runtime\\_MEIxxxx) 정리. 단, 최근 30분 내 만들어진
-    폴더는 '다른 인스턴스가 지금 사용 중'일 수 있으므로 절대 건드리지 않는다.
-    (이걸 안 지키면 실행 중인 다른 인스턴스의 python DLL을 지워 오류가 남)"""
-    try:
-        mei = getattr(sys, "_MEIPASS", None)
-        if not mei:
-            return
-        parent = os.path.dirname(mei)
-        cur = os.path.basename(mei)
-        now = time.time()
-        for name in os.listdir(parent):
-            if not name.startswith("_MEI") or name == cur:
-                continue
-            d = os.path.join(parent, name)
-            try:
-                if now - os.path.getmtime(d) < 1800:  # 30분 이내면 건너뜀
-                    continue
-            except OSError:
-                continue
-            shutil.rmtree(d, ignore_errors=True)
-    except Exception:
-        pass
-
-
 def hms(sec):
     sec = max(0, int(sec))
     return "{:02d}:{:02d}:{:02d}".format(sec // 3600, (sec % 3600) // 60, sec % 60)
@@ -1648,7 +1623,7 @@ def list_installed_programs():
 # ---------------------------------------------------------------------------
 # 자동 업데이트 (GitHub Releases)
 # ---------------------------------------------------------------------------
-APP_VERSION = "2.0"
+APP_VERSION = "2.2"
 GITHUB_REPO = "munang77/OptiBoost"
 
 
@@ -4586,7 +4561,9 @@ def main():
         return
     log("앱 시작 (v{}, frozen={}, admin={})".format(
         APP_VERSION, FROZEN, is_admin()))
-    threading.Thread(target=cleanup_stale_runtime, daemon=True).start()
+    # 압축폴더(_MEI) 자동정리는 하지 않는다 — 실행 중인 다른 인스턴스의
+    # python DLL을 지워 "Failed to load Python DLL" 오류를 유발하기 때문.
+    # PyInstaller가 정상 종료 시 자기 _MEI를 알아서 지운다.
     try:
         app = App()
         app.mainloop()
