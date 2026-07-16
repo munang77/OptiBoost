@@ -1205,16 +1205,26 @@ def log_exc(prefix=""):
 
 
 def cleanup_stale_runtime():
-    """onefile 압축 폴더(runtime\\_MEIxxxx) 중 지금 쓰는 것 외의 잔재를 정리."""
+    """onefile 압축 잔재(runtime\\_MEIxxxx) 정리. 단, 최근 30분 내 만들어진
+    폴더는 '다른 인스턴스가 지금 사용 중'일 수 있으므로 절대 건드리지 않는다.
+    (이걸 안 지키면 실행 중인 다른 인스턴스의 python DLL을 지워 오류가 남)"""
     try:
         mei = getattr(sys, "_MEIPASS", None)
         if not mei:
             return
         parent = os.path.dirname(mei)
         cur = os.path.basename(mei)
+        now = time.time()
         for name in os.listdir(parent):
-            if name.startswith("_MEI") and name != cur:
-                shutil.rmtree(os.path.join(parent, name), ignore_errors=True)
+            if not name.startswith("_MEI") or name == cur:
+                continue
+            d = os.path.join(parent, name)
+            try:
+                if now - os.path.getmtime(d) < 1800:  # 30분 이내면 건너뜀
+                    continue
+            except OSError:
+                continue
+            shutil.rmtree(d, ignore_errors=True)
     except Exception:
         pass
 
