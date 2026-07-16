@@ -61,7 +61,7 @@ New-Item -Path $uk -Force | Out-Null
 $unPath = Join-Path $inst 'uninstall.ps1'
 $un = 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$c=Get-Content -Raw -Encoding UTF8 ''{0}''; iex $c"' -f $unPath
 Set-ItemProperty $uk 'DisplayName' 'OptiBoost'
-Set-ItemProperty $uk 'DisplayVersion' '1.8'
+Set-ItemProperty $uk 'DisplayVersion' '1.9'
 Set-ItemProperty $uk 'Publisher' 'OptiBoost'
 Set-ItemProperty $uk 'DisplayIcon' $icon
 Set-ItemProperty $uk 'InstallLocation' $inst

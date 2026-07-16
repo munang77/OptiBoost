@@ -1218,9 +1218,14 @@ def load_config():
 
 
 def save_config(d):
+    # 임시파일에 쓰고 교체 (저장 중 강제종료돼도 파일이 깨지지 않음)
     try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as fh:
+        tmp = CONFIG_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(d, fh, ensure_ascii=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, CONFIG_FILE)
     except Exception:
         pass
 
@@ -1238,8 +1243,10 @@ def add_freed(nbytes):
     s["total_freed"] = s.get("total_freed", 0) + int(nbytes)
     s["runs"] = s.get("runs", 0) + 1
     try:
-        with open(STATS_FILE, "w", encoding="utf-8") as fh:
+        tmp = STATS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(s, fh)
+        os.replace(tmp, STATS_FILE)
     except Exception:
         pass
     return s
@@ -1280,8 +1287,10 @@ def _load_disabled():
 
 def _save_disabled(lst):
     try:
-        with open(DISABLED_FILE, "w", encoding="utf-8") as fh:
+        tmp = DISABLED_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(lst, fh, ensure_ascii=False)
+        os.replace(tmp, DISABLED_FILE)
     except Exception:
         pass
 
@@ -1493,7 +1502,7 @@ def relaunch_app():
     bat = os.path.join(tempfile.gettempdir(), "optiboost_restart.bat")
     script = (
         "@echo off\r\n"
-        "ping 127.0.0.1 -n 2 >nul\r\n"
+        "ping 127.0.0.1 -n 3 >nul\r\n"
         'start "" ' + parts + "\r\n"
         'del "%~f0"\r\n'
     )
@@ -1614,7 +1623,7 @@ def list_installed_programs():
 # ---------------------------------------------------------------------------
 # 자동 업데이트 (GitHub Releases)
 # ---------------------------------------------------------------------------
-APP_VERSION = "1.8"
+APP_VERSION = "1.9"
 GITHUB_REPO = "munang77/OptiBoost"
 
 
@@ -2821,9 +2830,9 @@ class App(tk.Tk):
         )
         self.auto_last.pack(anchor="w", padx=14, pady=(0, 12))
 
-        # 지난 세션에 켜져 있었다면 자동 재개
+        # 지난 세션에 켜져 있었다면 자동 재개 (조용히)
         if cfg.get("auto_on"):
-            self.after(800, self.start_auto)
+            self.after(800, lambda: self.start_auto(silent=True))
 
     def _read_interval(self):
         def iv(var):
@@ -2835,7 +2844,8 @@ class App(tk.Tk):
 
     def _save_auto_cfg(self):
         try:
-            save_config({
+            cfg = load_config()  # 기존 설정을 보존하며 병합 (덮어쓰기 금지)
+            cfg.update({
                 "auto_h": int(self.auto_h.get() or 0),
                 "auto_m": int(self.auto_m.get() or 0),
                 "auto_s": int(self.auto_s.get() or 0),
@@ -2844,13 +2854,15 @@ class App(tk.Tk):
                 "auto_recycle": self.auto_recycle.get(),
                 "auto_on": self.auto_on,
             })
+            save_config(cfg)
         except Exception:
             pass
 
-    def start_auto(self):
+    def start_auto(self, silent=False):
         interval = self._read_interval()
         if interval < 5:
-            messagebox.showinfo("안내", "간격은 최소 5초 이상으로 설정하세요.")
+            if not silent:
+                messagebox.showinfo("안내", "간격은 최소 5초 이상으로 설정하세요.")
             return
         if self._auto_after:
             self.after_cancel(self._auto_after)
