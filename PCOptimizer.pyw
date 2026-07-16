@@ -1204,6 +1204,21 @@ def log_exc(prefix=""):
     log(prefix + "\n" + traceback.format_exc())
 
 
+def cleanup_stale_runtime():
+    """onefile 압축 폴더(runtime\\_MEIxxxx) 중 지금 쓰는 것 외의 잔재를 정리."""
+    try:
+        mei = getattr(sys, "_MEIPASS", None)
+        if not mei:
+            return
+        parent = os.path.dirname(mei)
+        cur = os.path.basename(mei)
+        for name in os.listdir(parent):
+            if name.startswith("_MEI") and name != cur:
+                shutil.rmtree(os.path.join(parent, name), ignore_errors=True)
+    except Exception:
+        pass
+
+
 def hms(sec):
     sec = max(0, int(sec))
     return "{:02d}:{:02d}:{:02d}".format(sec // 3600, (sec % 3600) // 60, sec % 60)
@@ -1623,7 +1638,7 @@ def list_installed_programs():
 # ---------------------------------------------------------------------------
 # 자동 업데이트 (GitHub Releases)
 # ---------------------------------------------------------------------------
-APP_VERSION = "1.9"
+APP_VERSION = "2.0"
 GITHUB_REPO = "munang77/OptiBoost"
 
 
@@ -4561,6 +4576,7 @@ def main():
         return
     log("앱 시작 (v{}, frozen={}, admin={})".format(
         APP_VERSION, FROZEN, is_admin()))
+    threading.Thread(target=cleanup_stale_runtime, daemon=True).start()
     try:
         app = App()
         app.mainloop()

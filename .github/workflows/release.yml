@@ -24,8 +24,10 @@ jobs:
         run: pip install pyinstaller
 
       - name: Build OptiBoost.exe
+        shell: pwsh
         run: >
           pyinstaller --onefile --noconsole --uac-admin
+          --runtime-tmpdir "%LOCALAPPDATA%\OptiBoost\runtime"
           --icon icon.ico --add-data "icon.ico;."
           --name OptiBoost PCOptimizer.pyw
 
